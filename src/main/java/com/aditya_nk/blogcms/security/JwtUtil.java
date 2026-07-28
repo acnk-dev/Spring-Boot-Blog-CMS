@@ -1,4 +1,4 @@
-package com.aditya_nk.blogcms;
+package com.aditya_nk.blogcms.security;
 
 import com.aditya_nk.blogcms.entity.User;
 import io.jsonwebtoken.Claims;
