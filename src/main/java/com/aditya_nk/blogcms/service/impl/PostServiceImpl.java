@@ -1,0 +1,320 @@
+package com.aditya_nk.blogcms.service.impl;
+
+import com.aditya_nk.blogcms.dto.request.CreatePostRequest;
+import com.aditya_nk.blogcms.dto.request.UpdatePostRequest;
+import com.aditya_nk.blogcms.dto.response.PostResponse;
+import com.aditya_nk.blogcms.entity.Category;
+import com.aditya_nk.blogcms.entity.Post;
+import com.aditya_nk.blogcms.entity.Tag;
+import com.aditya_nk.blogcms.entity.User;
+import com.aditya_nk.blogcms.enums.PostStatus;
+import com.aditya_nk.blogcms.exception.ResourceNotFoundException;
+import com.aditya_nk.blogcms.exception.UnauthorizedException;
+import com.aditya_nk.blogcms.mapper.PostMapper;
+import com.aditya_nk.blogcms.repository.CategoryRepository;
+import com.aditya_nk.blogcms.repository.PostRepository;
+import com.aditya_nk.blogcms.repository.TagRepository;
+import com.aditya_nk.blogcms.repository.UserRepository;
+import com.aditya_nk.blogcms.service.PostService;
+import com.aditya_nk.blogcms.util.SlugUtil;
+import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.LocalDateTime;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+/**
+ * Implementation of PostService interface.
+ * Provides business logic for post management operations.
+ *
+ * WARNING: This implementation has N+1 query problems!
+ *
+ * When fetching a list of posts:
+ * - 1 query to fetch posts
+ * - N queries to fetch each post's author (lazy loading in mapper)
+ * - N queries to fetch each post's category (lazy loading in mapper)
+ * - N queries to fetch each post's tags (lazy loading in mapper)
+ *
+ * Total: 1 + 3N queries for N posts!
+ *
+ * This will be optimized in a future commit using:
+ * - JOIN FETCH queries
+ * - @EntityGraph
+ * - Batch fetching
+ */
+@Service
+@RequiredArgsConstructor
+@Transactional(readOnly = true)
+public class PostServiceImpl implements PostService {
+
+    private final PostRepository postRepository;
+    private final UserRepository userRepository;
+    private final CategoryRepository categoryRepository;
+    private final TagRepository tagRepository;
+    private final PostMapper postMapper;
+
+    @Override
+    @Transactional
+    public PostResponse createPost(CreatePostRequest request, Long userId) {
+        // Find the author
+        User author = userRepository.findById(userId)
+                .filter(user -> !user.getIsDeleted())
+                .orElseThrow(() -> new ResourceNotFoundException("User", "id", userId));
+
+        // Find the category
+        Category category = categoryRepository.findById(request.getCategoryId())
+                .orElseThrow(() -> new ResourceNotFoundException("Category", "id", request.getCategoryId()));
+
+        // Find tags if provided
+        Set<Tag> tags = new HashSet<>();
+        if (request.getTagIds() != null && !request.getTagIds().isEmpty()) {
+            tags = new HashSet<>(tagRepository.findAllById(request.getTagIds()));
+        }
+
+        // Generate unique slug from title
+        String slug = SlugUtil.generateUniqueSlug(request.getTitle(), postRepository);
+
+        // Create the post
+        Post post = Post.builder()
+                .user(author)
+                .category(category)
+                .title(request.getTitle())
+                .slug(slug)
+                .content(request.getContent())
+                .excerpt(request.getExcerpt())
+                .featuredImageUrl(request.getFeaturedImageUrl())
+                .status(request.getStatus() != null ? request.getStatus() : PostStatus.DRAFT)
+                .tags(tags)
+                .build();
+
+        // Set publishedAt if publishing immediately
+        if (post.getStatus() == PostStatus.PUBLISHED) {
+            post.setPublishedAt(LocalDateTime.now());
+        }
+
+        Post savedPost = postRepository.save(post);
+
+        return postMapper.toResponse(savedPost);
+    }
+
+    @Override
+    @Transactional
+    public PostResponse updatePost(Long postId, UpdatePostRequest request, Long userId) {
+        Post post = postRepository.findById(postId)
+                .filter(p -> !p.getIsDeleted())
+                .orElseThrow(() -> new ResourceNotFoundException("Post", "id", postId));
+
+        // Check if user is the author
+        if (!post.getUser().getId().equals(userId)) {
+            throw new UnauthorizedException("You are not authorized to update this post");
+        }
+
+        // Update title and regenerate slug if title changed
+        if (request.getTitle() != null) {
+            post.setTitle(request.getTitle());
+            String newSlug = SlugUtil.generateUniqueSlug(request.getTitle(), post.getSlug(), postRepository);
+            post.setSlug(newSlug);
+        }
+
+        // Update content
+        if (request.getContent() != null) {
+            post.setContent(request.getContent());
+        }
+
+        // Update excerpt
+        if (request.getExcerpt() != null) {
+            post.setExcerpt(request.getExcerpt());
+        }
+
+        // Update featured image
+        if (request.getFeaturedImageUrl() != null) {
+            post.setFeaturedImageUrl(request.getFeaturedImageUrl());
+        }
+
+        // Update category
+        if (request.getCategoryId() != null) {
+            Category category = categoryRepository.findById(request.getCategoryId())
+                    .orElseThrow(() -> new ResourceNotFoundException("Category", "id", request.getCategoryId()));
+            post.setCategory(category);
+        }
+
+        // Update tags
+        if (request.getTagIds() != null) {
+            Set<Tag> tags = new HashSet<>(tagRepository.findAllById(request.getTagIds()));
+            post.setTags(tags);
+        }
+
+        // Update status
+        if (request.getStatus() != null) {
+            PostStatus oldStatus = post.getStatus();
+            post.setStatus(request.getStatus());
+
+            // Set publishedAt when publishing for the first time
+            if (oldStatus == PostStatus.DRAFT && request.getStatus() == PostStatus.PUBLISHED) {
+                post.setPublishedAt(LocalDateTime.now());
+            }
+        }
+
+        Post savedPost = postRepository.save(post);
+
+        return postMapper.toResponse(savedPost);
+    }
+
+    @Override
+    @Transactional
+    public void deletePost(Long postId, Long userId) {
+        Post post = postRepository.findById(postId)
+                .filter(p -> !p.getIsDeleted())
+                .orElseThrow(() -> new ResourceNotFoundException("Post", "id", postId));
+
+        // Check if user is the author
+        if (!post.getUser().getId().equals(userId)) {
+            throw new UnauthorizedException("You are not authorized to delete this post");
+        }
+
+        // Soft delete
+        post.setIsDeleted(true);
+        postRepository.save(post);
+    }
+
+    @Override
+    public PostResponse getPostById(Long postId) {
+        Post post = postRepository.findById(postId)
+                .filter(p -> !p.getIsDeleted())
+                .orElseThrow(() -> new ResourceNotFoundException("Post", "id", postId));
+
+        return postMapper.toResponse(post);
+    }
+
+    @Override
+    public PostResponse getPostBySlug(String slug) {
+        Post post = postRepository.findBySlugAndIsDeletedFalse(slug)
+                .orElseThrow(() -> new ResourceNotFoundException("Post", "slug", slug));
+
+        return postMapper.toResponse(post);
+    }
+
+    @Override
+    public Page<PostResponse> getAllPosts(int page, int size, String sortBy, String sortDir) {
+        Sort sort = sortDir.equalsIgnoreCase("asc")
+                ? Sort.by(sortBy).ascending()
+                : Sort.by(sortBy).descending();
+
+        Pageable pageable = PageRequest.of(page, size, sort);
+
+        // This fetches posts only - no relationships loaded yet
+        Page<Post> posts = postRepository.findByStatusAndIsDeletedFalse(
+                PostStatus.PUBLISHED,
+                pageable
+        );
+
+        // N+1 problem happens here!
+        // For each post, the mapper triggers lazy loading of:
+        // - author (User) - 1 query per post
+        // - category (Category) - 1 query per post
+        // - tags (Set<Tag>) - 1 query per post
+        //
+        // For 10 posts: 1 + 10 + 10 + 10 = 31 queries!
+        return posts.map(postMapper::toResponse);
+    }
+
+    @Override
+    public Page<PostResponse> getPostsByUser(Long userId, int page, int size) {
+        Pageable pageable = PageRequest.of(page, size, Sort.by("createdAt").descending());
+
+        Page<Post> posts = postRepository.findByUserIdAndIsDeletedFalse(userId, pageable);
+
+        // N+1 problem here too!
+        return posts.map(postMapper::toResponse);
+    }
+
+    @Override
+    public Page<PostResponse> searchPosts(String query, int page, int size) {
+        Pageable pageable = PageRequest.of(page, size, Sort.by("publishedAt").descending());
+
+        Page<Post> posts = postRepository.searchPublishedPosts(query, pageable);
+
+        // N+1 problem here too!
+        return posts.map(postMapper::toResponse);
+    }
+
+    @Override
+    public Page<PostResponse> getPostsByCategory(Long categoryId, int page, int size) {
+        // Verify category exists
+        if (!categoryRepository.existsById(categoryId)) {
+            throw new ResourceNotFoundException("Category", "id", categoryId);
+        }
+
+        Pageable pageable = PageRequest.of(page, size, Sort.by("publishedAt").descending());
+
+        Page<Post> posts = postRepository.findByCategoryIdAndStatusAndIsDeletedFalse(
+                categoryId,
+                PostStatus.PUBLISHED,
+                pageable
+        );
+
+        // N+1 problem here too!
+        return posts.map(postMapper::toResponse);
+    }
+
+    @Override
+    public List<PostResponse> getPostsByTag(Long tagId) {
+        // Verify tag exists
+        if (!tagRepository.existsById(tagId)) {
+            throw new ResourceNotFoundException("Tag", "id", tagId);
+        }
+
+        List<Post> posts = postRepository.findByTagsIdAndStatusAndIsDeletedFalse(
+                tagId,
+                PostStatus.PUBLISHED
+        );
+
+        // N+1 problem here too!
+        return posts.stream()
+                .map(postMapper::toResponse)
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    @Transactional
+    public void incrementViewCount(Long postId) {
+        // Check if post exists
+        if (!postRepository.existsById(postId)) {
+            throw new ResourceNotFoundException("Post", "id", postId);
+        }
+
+        // Atomic increment - no N+1 problem here!
+        postRepository.incrementViewCount(postId);
+    }
+
+    @Override
+    @Transactional
+    public PostResponse publishPost(Long postId, Long userId) {
+        Post post = postRepository.findById(postId)
+                .filter(p -> !p.getIsDeleted())
+                .orElseThrow(() -> new ResourceNotFoundException("Post", "id", postId));
+
+        // Check if user is the author
+        if (!post.getUser().getId().equals(userId)) {
+            throw new UnauthorizedException("You are not authorized to publish this post");
+        }
+
+        // Set status and publish date
+        post.setStatus(PostStatus.PUBLISHED);
+        if (post.getPublishedAt() == null) {
+            post.setPublishedAt(LocalDateTime.now());
+        }
+
+        Post savedPost = postRepository.save(post);
+
+        return postMapper.toResponse(savedPost);
+    }
+}
