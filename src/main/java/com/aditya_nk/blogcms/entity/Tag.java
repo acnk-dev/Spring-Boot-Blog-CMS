@@ -6,6 +6,8 @@ import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 
 import java.time.LocalDateTime;
+import java.util.HashSet;
+import java.util.Set;
 
 @Entity
 @Table(name = "tags")
@@ -25,6 +27,10 @@ public class Tag {
 
     @Column(nullable = false, unique = true, length = 60)
     private String slug;
+
+    @ManyToMany(mappedBy = "tags")
+    @Builder.Default
+    private Set<Post> posts = new HashSet<>();
 
     @CreationTimestamp
     @Column(nullable = false, updatable = false)
