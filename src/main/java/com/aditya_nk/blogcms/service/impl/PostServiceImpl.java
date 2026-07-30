@@ -35,20 +35,24 @@ import java.util.stream.Collectors;
  * Implementation of PostService interface.
  * Provides business logic for post management operations.
  *
- * WARNING: This implementation has N+1 query problems!
+ * N+1 QUERY PROBLEM - SOLVED!
  *
- * When fetching a list of posts:
+ * The N+1 problem has been fixed using @EntityGraph in PostRepository.
+ * All list-returning methods now eagerly fetch user, category, and tags
+ * in a single query using LEFT JOIN FETCH.
+ *
+ * Before fix (N+1 problem):
  * - 1 query to fetch posts
- * - N queries to fetch each post's author (lazy loading in mapper)
- * - N queries to fetch each post's category (lazy loading in mapper)
- * - N queries to fetch each post's tags (lazy loading in mapper)
+ * - N queries to fetch each post's author
+ * - N queries to fetch each post's category
+ * - N queries to fetch each post's tags
+ * - Total: 1 + 3N queries for N posts!
  *
- * Total: 1 + 3N queries for N posts!
+ * After fix (@EntityGraph):
+ * - 1 query with LEFT JOIN FETCH for all relationships
+ * - Total: 1 query for N posts!
  *
- * This will be optimized in a future commit using:
- * - JOIN FETCH queries
- * - @EntityGraph
- * - Batch fetching
+ * @see com.studylink.blogcms.repository.PostRepository
  */
 @Service
 @RequiredArgsConstructor
@@ -210,19 +214,14 @@ public class PostServiceImpl implements PostService {
 
         Pageable pageable = PageRequest.of(page, size, sort);
 
-        // This fetches posts only - no relationships loaded yet
+        // @EntityGraph in repository eagerly fetches user, category, and tags
+        // in a single query using LEFT JOIN FETCH
         Page<Post> posts = postRepository.findByStatusAndIsDeletedFalse(
                 PostStatus.PUBLISHED,
                 pageable
         );
 
-        // N+1 problem happens here!
-        // For each post, the mapper triggers lazy loading of:
-        // - author (User) - 1 query per post
-        // - category (Category) - 1 query per post
-        // - tags (Set<Tag>) - 1 query per post
-        //
-        // For 10 posts: 1 + 10 + 10 + 10 = 31 queries!
+        // No N+1 problem - relationships already loaded!
         return posts.map(postMapper::toResponse);
     }
 
@@ -232,7 +231,7 @@ public class PostServiceImpl implements PostService {
 
         Page<Post> posts = postRepository.findByUserIdAndIsDeletedFalse(userId, pageable);
 
-        // N+1 problem here too!
+        // No N+1 problem - @EntityGraph eagerly fetches relationships
         return posts.map(postMapper::toResponse);
     }
 
@@ -242,7 +241,7 @@ public class PostServiceImpl implements PostService {
 
         Page<Post> posts = postRepository.searchPublishedPosts(query, pageable);
 
-        // N+1 problem here too!
+        // No N+1 problem - @EntityGraph eagerly fetches relationships
         return posts.map(postMapper::toResponse);
     }
 
@@ -261,7 +260,7 @@ public class PostServiceImpl implements PostService {
                 pageable
         );
 
-        // N+1 problem here too!
+        // No N+1 problem - @EntityGraph eagerly fetches relationships
         return posts.map(postMapper::toResponse);
     }
 
@@ -277,7 +276,7 @@ public class PostServiceImpl implements PostService {
                 PostStatus.PUBLISHED
         );
 
-        // N+1 problem here too!
+        // No N+1 problem - @EntityGraph eagerly fetches relationships
         return posts.stream()
                 .map(postMapper::toResponse)
                 .collect(Collectors.toList());

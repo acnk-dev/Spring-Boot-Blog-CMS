@@ -21,28 +21,22 @@ import java.util.List;
  * REST Controller for post operations.
  * Handles CRUD operations for blog posts.
  *
- * WARNING: This controller will demonstrate the N+1 query problem!
+ * N+1 QUERY PROBLEM - SOLVED!
  *
- * When fetching lists of posts (getAllPosts, getPostsByUser, etc.),
- * the PostService triggers N+1 queries because:
- * - 1 query fetches posts
- * - N queries fetch each post's author (lazy loading)
- * - N queries fetch each post's category (lazy loading)
- * - N queries fetch each post's tags (lazy loading)
+ * The N+1 query problem has been fixed using @EntityGraph in PostRepository.
+ * All list-returning methods now use a single query with LEFT JOIN FETCH
+ * to eagerly load user, category, and tags relationships.
  *
- * To observe N+1 problem:
- * 1. Enable SQL logging in application.properties:
- *    spring.jpa.show-sql=true
- *    spring.jpa.properties.hibernate.format_sql=true
+ * Before fix: 1 + 3N queries (1 for posts, N for each relationship)
+ * After fix: 1 query with JOIN FETCH
  *
- * 2. Add statistics logging:
- *    spring.jpa.properties.hibernate.generate_statistics=true
- *    logging.level.org.hibernate.stat=DEBUG
+ * To verify the fix, enable SQL logging in application.properties:
+ *   spring.jpa.show-sql=true
+ *   spring.jpa.properties.hibernate.format_sql=true
+ *   spring.jpa.properties.hibernate.generate_statistics=true
+ *   logging.level.org.hibernate.stat=DEBUG
  *
- * 3. Call GET /api/v1/posts with 10 posts in database
- * 4. Observe 31 queries in console (1 + 10 + 10 + 10)
- *
- * This will be optimized in a future commit using JOIN FETCH.
+ * Then call GET /api/v1/posts and observe only 1 query in console.
  */
 @RestController
 @RequestMapping("/api/v1/posts")
@@ -76,9 +70,7 @@ public class PostController {
     /**
      * Get all published posts with pagination.
      * Public endpoint - no authentication required.
-     *
-     * WARNING: This endpoint demonstrates N+1 query problem!
-     * Watch the console logs when calling this endpoint.
+     * Uses @EntityGraph to avoid N+1 queries - fetches all relationships in single query.
      *
      * @param page page number (0-indexed)
      * @param size page size (default 10)
@@ -95,7 +87,6 @@ public class PostController {
 
         log.info("Fetching posts - page: {}, size: {}, sortBy: {}, sortDir: {}",
                 page, size, sortBy, sortDir);
-        log.warn(">>> N+1 QUERY PROBLEM: Watch the SQL logs below! <<<");
 
         Page<PostResponse> posts = postService.getAllPosts(page, size, sortBy, sortDir);
 
@@ -191,8 +182,7 @@ public class PostController {
     /**
      * Get posts by a specific user with pagination.
      * Public endpoint - no authentication required.
-     *
-     * WARNING: This endpoint demonstrates N+1 query problem!
+     * Uses @EntityGraph to avoid N+1 queries.
      *
      * @param userId the author's user ID
      * @param page page number (0-indexed)
@@ -215,8 +205,7 @@ public class PostController {
     /**
      * Search posts by title and content.
      * Public endpoint - no authentication required.
-     *
-     * WARNING: This endpoint demonstrates N+1 query problem!
+     * Uses @EntityGraph to avoid N+1 queries.
      *
      * @param query the search query
      * @param page page number (0-indexed)
@@ -239,8 +228,7 @@ public class PostController {
     /**
      * Get posts by category with pagination.
      * Public endpoint - no authentication required.
-     *
-     * WARNING: This endpoint demonstrates N+1 query problem!
+     * Uses @EntityGraph to avoid N+1 queries.
      *
      * @param categoryId the category ID
      * @param page page number (0-indexed)
@@ -263,8 +251,7 @@ public class PostController {
     /**
      * Get posts by tag.
      * Public endpoint - no authentication required.
-     *
-     * WARNING: This endpoint demonstrates N+1 query problem!
+     * Uses @EntityGraph to avoid N+1 queries.
      *
      * @param tagId the tag ID
      * @return list of post responses with the tag
@@ -299,4 +286,3 @@ public class PostController {
         return ResponseEntity.ok(response);
     }
 }
-

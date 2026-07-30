@@ -4,6 +4,7 @@ import com.aditya_nk.blogcms.entity.Post;
 import com.aditya_nk.blogcms.enums.PostStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -27,32 +28,38 @@ public interface PostRepository extends JpaRepository<Post, Long> {
      * Find posts by status with pagination.
      * Excludes soft-deleted posts.
      * Used for listing published posts on homepage/blog page.
+     * Uses @EntityGraph to eagerly fetch user, category, and tags in a single query.
      *
      * @param status the post status (DRAFT, PUBLISHED)
      * @param pageable pagination information
      * @return Page of posts matching criteria
      */
+    @EntityGraph(attributePaths = {"user", "category", "tags"})
     Page<Post> findByStatusAndIsDeletedFalse(PostStatus status, Pageable pageable);
 
     /**
      * Find posts by author with pagination.
      * Excludes soft-deleted posts.
      * Used for author profile page showing their posts.
+     * Uses @EntityGraph to eagerly fetch user, category, and tags in a single query.
      *
      * @param userId the author's user ID
      * @param pageable pagination information
      * @return Page of posts by specified author
      */
+    @EntityGraph(attributePaths = {"user", "category", "tags"})
     Page<Post> findByUserIdAndIsDeletedFalse(Long userId, Pageable pageable);
 
     /**
      * Find post by slug.
      * Excludes soft-deleted posts.
      * Used for URL routing (e.g., /posts/my-post-slug).
+     * Uses @EntityGraph to eagerly fetch user, category, and tags in a single query.
      *
      * @param slug the URL-friendly identifier
      * @return Optional containing post if found, empty otherwise
      */
+    @EntityGraph(attributePaths = {"user", "category", "tags"})
     Optional<Post> findBySlugAndIsDeletedFalse(String slug);
 
     /**
@@ -78,11 +85,13 @@ public interface PostRepository extends JpaRepository<Post, Long> {
      * Uses case-insensitive LIKE search.
      * Excludes soft-deleted posts.
      * Only returns published posts.
+     * Uses @EntityGraph to eagerly fetch user, category, and tags in a single query.
      *
      * @param searchTerm the term to search for in title and content
      * @param pageable pagination information
      * @return Page of posts matching search criteria
      */
+    @EntityGraph(attributePaths = {"user", "category", "tags"})
     @Query("SELECT p FROM Post p WHERE p.isDeleted = false " +
             "AND p.status = 'PUBLISHED' " +
             "AND (LOWER(p.title) LIKE LOWER(CONCAT('%', :searchTerm, '%')) " +
@@ -93,12 +102,14 @@ public interface PostRepository extends JpaRepository<Post, Long> {
      * Find posts by category with status filter and pagination.
      * Excludes soft-deleted posts.
      * Used for category pages (e.g., /categories/technology).
+     * Uses @EntityGraph to eagerly fetch user, category, and tags in a single query.
      *
      * @param categoryId the category ID
      * @param status the post status
      * @param pageable pagination information
      * @return Page of posts in specified category
      */
+    @EntityGraph(attributePaths = {"user", "category", "tags"})
     Page<Post> findByCategoryIdAndStatusAndIsDeletedFalse(
             Long categoryId, PostStatus status, Pageable pageable);
 
@@ -106,23 +117,27 @@ public interface PostRepository extends JpaRepository<Post, Long> {
      * Find posts by tag with status filter.
      * Excludes soft-deleted posts.
      * Used for tag pages (e.g., /tags/java).
+     * Uses @EntityGraph to eagerly fetch user, category, and tags in a single query.
      *
      * @param tagId the tag ID
      * @param status the post status
      * @return List of posts with specified tag
      */
+    @EntityGraph(attributePaths = {"user", "category", "tags"})
     List<Post> findByTagsIdAndStatusAndIsDeletedFalse(Long tagId, PostStatus status);
 
     /**
      * Find posts by tag with pagination.
      * Excludes soft-deleted posts.
      * Used for tag pages with pagination.
+     * Uses @EntityGraph to eagerly fetch user, category, and tags in a single query.
      *
      * @param tagId the tag ID
      * @param status the post status
      * @param pageable pagination information
      * @return Page of posts with specified tag
      */
+    @EntityGraph(attributePaths = {"user", "category", "tags"})
     Page<Post> findByTagsIdAndStatusAndIsDeletedFalse(
             Long tagId, PostStatus status, Pageable pageable);
 
@@ -159,22 +174,26 @@ public interface PostRepository extends JpaRepository<Post, Long> {
      * Find all active posts (not soft-deleted).
      * Includes both DRAFT and PUBLISHED.
      * Used for admin listing.
+     * Uses @EntityGraph to eagerly fetch user, category, and tags in a single query.
      *
      * @param pageable pagination information
      * @return Page of active posts
      */
+    @EntityGraph(attributePaths = {"user", "category", "tags"})
     Page<Post> findByIsDeletedFalse(Pageable pageable);
 
     /**
      * Find posts by author and status.
      * Excludes soft-deleted posts.
      * Used for author dashboard (e.g., "My Drafts", "My Published").
+     * Uses @EntityGraph to eagerly fetch user, category, and tags in a single query.
      *
      * @param userId the author's user ID
      * @param status the post status
      * @param pageable pagination information
      * @return Page of posts matching criteria
      */
+    @EntityGraph(attributePaths = {"user", "category", "tags"})
     Page<Post> findByUserIdAndStatusAndIsDeletedFalse(
             Long userId, PostStatus status, Pageable pageable);
 
