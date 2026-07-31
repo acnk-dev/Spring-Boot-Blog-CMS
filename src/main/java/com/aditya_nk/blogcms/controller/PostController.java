@@ -4,6 +4,7 @@ import com.aditya_nk.blogcms.dto.request.CreatePostRequest;
 import com.aditya_nk.blogcms.dto.request.UpdatePostRequest;
 import com.aditya_nk.blogcms.dto.response.PostResponse;
 import com.aditya_nk.blogcms.entity.User;
+import com.aditya_nk.blogcms.exception.BadRequestException;
 import com.aditya_nk.blogcms.service.PostService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -14,6 +15,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 
@@ -282,6 +284,34 @@ public class PostController {
         log.info("Publishing post {} by user: {}", id, user.getEmail());
 
         PostResponse response = postService.publishPost(id, user.getId());
+
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Upload or replace the featured image for a post.
+     * Only the post author or ADMIN can upload an image.
+     * If the post already has a featured image, the old file is deleted first.
+     *
+     * @param id   the post ID
+     * @param file the image file (multipart/form-data, field name "file")
+     * @param user the authenticated user
+     * @return the updated post response with the new featuredImageUrl
+     */
+    @PostMapping("/{id}/image")
+    @PreAuthorize("hasAnyRole('AUTHOR', 'ADMIN')")
+    public ResponseEntity<PostResponse> uploadFeaturedImage(
+            @PathVariable Long id,
+            @RequestParam("file") MultipartFile file,
+            @AuthenticationPrincipal User user) {
+
+        log.info("Uploading featured image for post {} by user: {}", id, user.getEmail());
+
+        if (file.isEmpty()) {
+            throw new BadRequestException("File is empty");
+        }
+
+        PostResponse response = postService.uploadFeaturedImage(id, file, user.getId());
 
         return ResponseEntity.ok(response);
     }
