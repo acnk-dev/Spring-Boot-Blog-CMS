@@ -4,6 +4,7 @@ import com.aditya_nk.blogcms.dto.request.CreatePostRequest;
 import com.aditya_nk.blogcms.dto.request.UpdatePostRequest;
 import com.aditya_nk.blogcms.dto.response.PostResponse;
 import org.springframework.data.domain.Page;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 
@@ -129,4 +130,16 @@ public interface PostService {
      * @return the published post response
      */
     PostResponse publishPost(Long postId, Long userId);
+
+    /**
+     * Upload or replace the featured image for a post.
+     * Only the post owner or an ADMIN can perform this operation.
+     * If the post already has a featured image, the old file is deleted first.
+     *
+     * @param postId the ID of the post to update
+     * @param file   the new featured image file
+     * @param userId the ID of the requesting user
+     * @return the updated post response with the new featuredImageUrl
+     */
+    PostResponse uploadFeaturedImage(Long postId, MultipartFile file, Long userId);
 }

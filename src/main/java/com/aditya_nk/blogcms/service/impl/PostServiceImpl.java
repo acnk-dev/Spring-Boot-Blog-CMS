@@ -8,6 +8,7 @@ import com.aditya_nk.blogcms.entity.Post;
 import com.aditya_nk.blogcms.entity.Tag;
 import com.aditya_nk.blogcms.entity.User;
 import com.aditya_nk.blogcms.enums.PostStatus;
+import com.aditya_nk.blogcms.enums.Role;
 import com.aditya_nk.blogcms.exception.ResourceNotFoundException;
 import com.aditya_nk.blogcms.exception.UnauthorizedException;
 import com.aditya_nk.blogcms.mapper.PostMapper;
@@ -15,6 +16,7 @@ import com.aditya_nk.blogcms.repository.CategoryRepository;
 import com.aditya_nk.blogcms.repository.PostRepository;
 import com.aditya_nk.blogcms.repository.TagRepository;
 import com.aditya_nk.blogcms.repository.UserRepository;
+import com.aditya_nk.blogcms.service.FileStorageService;
 import com.aditya_nk.blogcms.service.PostService;
 import com.aditya_nk.blogcms.util.SlugUtil;
 import lombok.RequiredArgsConstructor;
@@ -24,6 +26,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.time.LocalDateTime;
 import java.util.HashSet;
@@ -64,6 +67,7 @@ public class PostServiceImpl implements PostService {
     private final CategoryRepository categoryRepository;
     private final TagRepository tagRepository;
     private final PostMapper postMapper;
+    private final FileStorageService fileStorageService;
 
     @Override
     @Transactional
@@ -312,6 +316,43 @@ public class PostServiceImpl implements PostService {
             post.setPublishedAt(LocalDateTime.now());
         }
 
+        Post savedPost = postRepository.save(post);
+
+        return postMapper.toResponse(savedPost);
+    }
+
+    @Override
+    @Transactional
+    public PostResponse uploadFeaturedImage(Long postId, MultipartFile file, Long userId) {
+
+        // 1. Find post
+        Post post = postRepository.findById(postId)
+                .filter(p -> !p.getIsDeleted())
+                .orElseThrow(() -> new ResourceNotFoundException("Post", "id", postId));
+
+        // 2. Find requesting user
+        User user = userRepository.findById(userId)
+                .filter(u -> !u.getIsDeleted())
+                .orElseThrow(() -> new ResourceNotFoundException("User", "id", userId));
+
+        // 3. Verify ownership or ADMIN role
+        boolean isOwner = post.getUser().getId().equals(userId);
+        boolean isAdmin = user.getRole() == Role.ADMIN;
+
+        if (!isOwner && !isAdmin) {
+            throw new UnauthorizedException("You are not authorized to upload an image for this post");
+        }
+
+        // 4. Delete old featured image if present
+        if (post.getFeaturedImageUrl() != null && !post.getFeaturedImageUrl().isBlank()) {
+            fileStorageService.deleteFile(post.getFeaturedImageUrl());
+        }
+
+        // 5. Store new file
+        String newImagePath = fileStorageService.storeFile(file, "posts");
+
+        // 6. Update and save
+        post.setFeaturedImageUrl(newImagePath);
         Post savedPost = postRepository.save(post);
 
         return postMapper.toResponse(savedPost);
