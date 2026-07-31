@@ -217,6 +217,77 @@ src/main/resources/
 
 ---
 
+## Claude Code Agents
+
+This project ships with two local Claude Code agents. Both live in `.claude/agents/` and are only active for this project.
+
+### Tester Agent
+
+Runs the Maven test suite and performs a static code review against the project's Spring Boot conventions (N+1 risks, missing `@Transactional`, hardcoded secrets, soft-delete consistency, etc.).
+
+**How to invoke:**
+
+Ask Claude directly in the chat:
+
+```
+run the tester agent
+```
+
+Or open the **Agents panel** in the Claude Code UI, select `tester`, and start a conversation.
+
+**What it checks:**
+
+| Check | Description |
+|-------|-------------|
+| Compilation | `./mvnw compile` must pass |
+| Test suite | All JUnit tests must pass |
+| Architecture | Controllers must not inject repositories |
+| Transactions | Write service methods must have `@Transactional` |
+| N+1 queries | List repository methods must use `@EntityGraph` |
+| Password security | BCrypt strength 12, no plain-text passwords |
+| JWT secret | Must be env-var backed, not hardcoded |
+| Response types | Controllers must return DTOs, not entities |
+| Bean Validation | Request DTOs must have validation annotations |
+| Soft deletes | Queries must filter `isDeleted = false` |
+| Logging | No `System.out.println` in source code |
+| Flyway | Migration files must be sequential and correctly named |
+| Security config | CSRF off, stateless sessions, JWT filter order |
+
+---
+
+### Coder Agent
+
+Implements features following the project's established patterns. Use this when building anything new — it reads the existing code first, plans the approach, implements across all layers (entity → repository → service → controller → DTO → migration), compiles to verify, commits, and then writes the dev-doc automatically.
+
+**How to invoke:**
+
+```
+run the coder agent — add a <feature> endpoint
+```
+
+Or open the **Agents panel** in the Claude Code UI and select `coder`.
+
+**What it does automatically:**
+
+1. Reads `CLAUDE.md` and the relevant existing files before writing anything
+2. States its plan (files to create/modify, patterns to follow, decisions to make) before coding
+3. Follows all project conventions: layered architecture, Lombok entities, `@EntityGraph`, `@Transactional`, Bean Validation, `@PreAuthorize`, Flyway migrations
+4. Runs `./mvnw compile` and fixes errors before committing
+5. Commits with a typed message (`feat:`, `fix:`, etc.)
+6. Writes a `docs/dev-docs/commit-<N>-<description>.md` teaching doc explaining every decision
+
+---
+
+### Documentation Agent (built into main agent)
+
+The main Claude Code agent (`CLAUDE.md`) has a built-in rule: **after every `git commit`, it automatically generates a dev-doc file in `./docs/dev-docs/`** explaining what was built, why, and what concepts were introduced. This is the teaching log for the project.
+
+The docs follow the naming convention `commit-<number>-<description>.md`. See `docs/dev-docs/` for existing examples.
+
+No manual invocation needed — this runs automatically after every commit Claude makes.
+
+---
+
 ## Developer Notes
 
 - **Postman collection** is available in the repo (`docs/` folder) for quick API testing.
