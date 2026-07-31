@@ -1,6 +1,5 @@
 package com.aditya_nk.blogcms.security;
 
-import com.aditya_nk.blogcms.entity.User;
 import com.aditya_nk.blogcms.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -30,18 +29,8 @@ public class UserDetailsServiceImpl implements UserDetailsService {
      */
     @Override
     public UserDetails loadUserByUsername(String email) throws UsernameNotFoundException {
-        User user = userRepository.findByEmailAndIsDeletedFalse(email)
+        return userRepository.findByEmailAndIsDeletedFalse(email)
                 .orElseThrow(() -> new UsernameNotFoundException("User not found with email: " + email));
-
-        return org.springframework.security.core.userdetails.User.builder()
-                .username(user.getEmail())
-                .password(user.getPassword())
-                .authorities("ROLE_" + user.getRole().name())
-                .accountExpired(false)
-                .accountLocked(false)
-                .credentialsExpired(false)
-                .disabled(user.getIsDeleted())
-                .build();
     }
 
     /**
@@ -52,19 +41,10 @@ public class UserDetailsServiceImpl implements UserDetailsService {
      * @throws UsernameNotFoundException if user not found or is deleted
      */
     public UserDetails loadUserById(Long userId) throws UsernameNotFoundException {
-        User user = userRepository.findById(userId)
+        return userRepository.findById(userId)
                 .filter(u -> !u.getIsDeleted())
                 .orElseThrow(() -> new UsernameNotFoundException("User not found with id: " + userId));
-
-        return org.springframework.security.core.userdetails.User.builder()
-                .username(user.getEmail())
-                .password(user.getPassword())
-                .authorities("ROLE_" + user.getRole().name())
-                .accountExpired(false)
-                .accountLocked(false)
-                .credentialsExpired(false)
-                .disabled(user.getIsDeleted())
-                .build();
     }
 }
+
 
