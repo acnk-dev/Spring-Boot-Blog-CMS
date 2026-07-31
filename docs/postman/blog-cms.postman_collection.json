@@ -1,0 +1,858 @@
+{
+  "info": {
+    "_postman_id": "blog-cms-collection-v1",
+    "name": "Blog CMS API",
+    "description": "Complete Postman collection for the Blog CMS Spring Boot API.\n\n## Setup\n1. Import this collection into Postman.\n2. Create an environment with variable `baseUrl` = `http://localhost:8080`.\n3. Run **Auth / Register** or **Auth / Login** — the `accessToken` and `refreshToken` variables are set automatically by the test scripts on every auth response.\n4. All protected endpoints read `{{accessToken}}` from the environment automatically.\n\n## Roles\n- `SUBSCRIBER` — read-only\n- `AUTHOR` — create / update / delete own posts\n- `ADMIN` — full access including categories and tags",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080",
+      "type": "string"
+    }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{accessToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "item": [
+    {
+      "name": "Auth",
+      "description": "User registration, login, and token refresh. No authentication required.",
+      "item": [
+        {
+          "name": "Register",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const body = pm.response.json();",
+                  "  pm.environment.set('accessToken', body.accessToken);",
+                  "  pm.environment.set('refreshToken', body.refreshToken);",
+                  "  console.log('Tokens saved to environment.');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"author@example.com\",\n  \"password\": \"password123\",\n  \"name\": \"Jane Author\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/register",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "register"]
+            },
+            "description": "Register a new user. Default role is SUBSCRIBER.\n\nReturns `accessToken` and `refreshToken`. The test script saves both to the active environment automatically."
+          },
+          "response": [
+            {
+              "name": "201 Created — user registered",
+              "status": "Created",
+              "code": 201,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"accessToken\": \"eyJhbGciOiJIUzI1NiJ9...\",\n  \"refreshToken\": \"eyJhbGciOiJIUzI1NiJ9...\",\n  \"tokenType\": \"Bearer\",\n  \"user\": {\n    \"id\": 1,\n    \"email\": \"author@example.com\",\n    \"name\": \"Jane Author\",\n    \"role\": \"SUBSCRIBER\"\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  pm.environment.set('accessToken', body.accessToken);",
+                  "  pm.environment.set('refreshToken', body.refreshToken);",
+                  "  console.log('Tokens saved to environment.');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"author@example.com\",\n  \"password\": \"password123\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "login"]
+            },
+            "description": "Authenticate with email and password.\n\nReturns `accessToken` and `refreshToken`. The test script saves both to the active environment automatically."
+          },
+          "response": [
+            {
+              "name": "200 OK — login successful",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"accessToken\": \"eyJhbGciOiJIUzI1NiJ9...\",\n  \"refreshToken\": \"eyJhbGciOiJIUzI1NiJ9...\",\n  \"tokenType\": \"Bearer\",\n  \"user\": {\n    \"id\": 1,\n    \"email\": \"author@example.com\",\n    \"name\": \"Jane Author\",\n    \"role\": \"AUTHOR\"\n  }\n}"
+            },
+            {
+              "name": "401 Unauthorized — bad credentials",
+              "status": "Unauthorized",
+              "code": 401,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"status\": 401,\n  \"error\": \"Unauthorized\",\n  \"message\": \"Bad credentials\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Refresh Token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  pm.environment.set('accessToken', body.accessToken);",
+                  "  pm.environment.set('refreshToken', body.refreshToken);",
+                  "  console.log('Tokens refreshed and saved.');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/refresh",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "refresh"]
+            },
+            "description": "Exchange a valid refresh token for a new access token and refresh token pair.\n\nUse this when the access token has expired. The test script overwrites the environment variables automatically."
+          },
+          "response": [
+            {
+              "name": "200 OK — tokens refreshed",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"accessToken\": \"eyJhbGciOiJIUzI1NiJ9...\",\n  \"refreshToken\": \"eyJhbGciOiJIUzI1NiJ9...\",\n  \"tokenType\": \"Bearer\",\n  \"user\": {\n    \"id\": 1,\n    \"email\": \"author@example.com\",\n    \"name\": \"Jane Author\",\n    \"role\": \"AUTHOR\"\n  }\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Posts",
+      "description": "Blog post CRUD, search, and image upload.\n\n**Auth required for write operations** (AUTHOR or ADMIN role).\nRead operations are public.",
+      "item": [
+        {
+          "name": "Create Post (with optional image)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "post",
+                  "value": "{\n  \"title\": \"Getting Started with Spring Boot\",\n  \"content\": \"Spring Boot makes it easy to create stand-alone, production-grade Spring-based applications. In this post we will walk through the key concepts and best practices for building a robust REST API with Spring Boot 4 and Java 21.\",\n  \"excerpt\": \"A practical introduction to Spring Boot 4 with Java 21.\",\n  \"categoryId\": 1,\n  \"tagIds\": [1, 2],\n  \"status\": \"DRAFT\"\n}",
+                  "type": "text",
+                  "contentType": "application/json",
+                  "description": "Required. CreatePostRequest as JSON. Content-Type must be set to application/json on this row (click the three-dot menu on the key)."
+                },
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": [],
+                  "description": "Optional. Featured image file (JPEG, PNG, GIF, WebP). Leave blank to create post without an image.",
+                  "disabled": true
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/posts",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "posts"]
+            },
+            "description": "Create a new post in a single request.\n\n**Content-Type:** `multipart/form-data` (set automatically by Postman when using form-data body).\n\n**Parts:**\n- `post` — JSON object, Content-Type must be `application/json`\n- `file` — image file, optional (enable the row and select a file)\n\n**Required role:** AUTHOR or ADMIN\n\n**Important (Postman):** After adding the `post` key, hover over it → click the triple-dot menu → \"Content type\" → type `application/json`. Without this Spring cannot deserialize the JSON part.\n\n**Status values:** `DRAFT` | `PUBLISHED` | `ARCHIVED`"
+          },
+          "response": [
+            {
+              "name": "201 Created — post created without image",
+              "status": "Created",
+              "code": 201,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"id\": 1,\n  \"title\": \"Getting Started with Spring Boot\",\n  \"slug\": \"getting-started-with-spring-boot\",\n  \"content\": \"Spring Boot makes it easy...\",\n  \"excerpt\": \"A practical introduction to Spring Boot 4 with Java 21.\",\n  \"featuredImageUrl\": null,\n  \"status\": \"DRAFT\",\n  \"viewCount\": 0,\n  \"author\": { \"id\": 1, \"name\": \"Jane Author\", \"email\": \"author@example.com\" },\n  \"category\": { \"id\": 1, \"name\": \"Backend\", \"slug\": \"backend\" },\n  \"tags\": [\n    { \"id\": 1, \"name\": \"Spring Boot\", \"slug\": \"spring-boot\" },\n    { \"id\": 2, \"name\": \"Java\", \"slug\": \"java\" }\n  ],\n  \"createdAt\": \"2026-03-22T10:00:00\",\n  \"updatedAt\": \"2026-03-22T10:00:00\",\n  \"publishedAt\": null\n}"
+            },
+            {
+              "name": "201 Created — post created with image",
+              "status": "Created",
+              "code": 201,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"id\": 2,\n  \"title\": \"Getting Started with Spring Boot\",\n  \"slug\": \"getting-started-with-spring-boot\",\n  \"content\": \"Spring Boot makes it easy...\",\n  \"excerpt\": \"A practical introduction to Spring Boot 4 with Java 21.\",\n  \"featuredImageUrl\": \"/uploads/posts/550e8400-e29b-41d4-a716-446655440000.jpg\",\n  \"status\": \"DRAFT\",\n  \"viewCount\": 0,\n  \"author\": { \"id\": 1, \"name\": \"Jane Author\", \"email\": \"author@example.com\" },\n  \"category\": { \"id\": 1, \"name\": \"Backend\", \"slug\": \"backend\" },\n  \"tags\": [],\n  \"createdAt\": \"2026-03-22T10:00:00\",\n  \"updatedAt\": \"2026-03-22T10:00:00\",\n  \"publishedAt\": null\n}"
+            },
+            {
+              "name": "400 Bad Request — validation failure",
+              "status": "Bad Request",
+              "code": 400,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"status\": 400,\n  \"error\": \"Bad Request\",\n  \"message\": \"Validation failed\",\n  \"errors\": {\n    \"title\": \"Title is required\",\n    \"content\": \"Content must be at least 50 characters\"\n  }\n}"
+            },
+            {
+              "name": "403 Forbidden — insufficient role",
+              "status": "Forbidden",
+              "code": 403,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"status\": 403,\n  \"error\": \"Forbidden\",\n  \"message\": \"Access Denied\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get All Posts (paginated)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/posts?page=0&size=10&sortBy=publishedAt&sortDir=desc",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "posts"],
+              "query": [
+                { "key": "page", "value": "0", "description": "Page number, 0-indexed" },
+                { "key": "size", "value": "10", "description": "Items per page" },
+                { "key": "sortBy", "value": "publishedAt", "description": "Field to sort by (publishedAt, createdAt, viewCount, title)" },
+                { "key": "sortDir", "value": "desc", "description": "asc or desc" }
+              ]
+            },
+            "description": "Returns all PUBLISHED posts with pagination. Public — no auth required.\n\nOnly posts with status `PUBLISHED` are returned. Soft-deleted posts are excluded."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"content\": [\n    {\n      \"id\": 1,\n      \"title\": \"Getting Started with Spring Boot\",\n      \"slug\": \"getting-started-with-spring-boot\",\n      \"excerpt\": \"A practical introduction.\",\n      \"featuredImageUrl\": \"/uploads/posts/abc123.jpg\",\n      \"status\": \"PUBLISHED\",\n      \"viewCount\": 42,\n      \"author\": { \"id\": 1, \"name\": \"Jane Author\" },\n      \"category\": { \"id\": 1, \"name\": \"Backend\", \"slug\": \"backend\" },\n      \"tags\": [{ \"id\": 1, \"name\": \"Spring Boot\", \"slug\": \"spring-boot\" }],\n      \"publishedAt\": \"2026-03-22T10:00:00\"\n    }\n  ],\n  \"pageable\": { \"pageNumber\": 0, \"pageSize\": 10 },\n  \"totalElements\": 1,\n  \"totalPages\": 1,\n  \"last\": true,\n  \"first\": true\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Post by ID",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/posts/1",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "posts", "1"]
+            },
+            "description": "Get a single post by its database ID. Public — no auth required.\n\nAlso increments the post's view count."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"id\": 1,\n  \"title\": \"Getting Started with Spring Boot\",\n  \"slug\": \"getting-started-with-spring-boot\",\n  \"content\": \"Full content here...\",\n  \"featuredImageUrl\": \"/uploads/posts/abc123.jpg\",\n  \"status\": \"PUBLISHED\",\n  \"viewCount\": 43,\n  \"author\": { \"id\": 1, \"name\": \"Jane Author\", \"email\": \"author@example.com\" },\n  \"category\": { \"id\": 1, \"name\": \"Backend\", \"slug\": \"backend\" },\n  \"tags\": [{ \"id\": 1, \"name\": \"Spring Boot\", \"slug\": \"spring-boot\" }],\n  \"createdAt\": \"2026-03-22T10:00:00\",\n  \"publishedAt\": \"2026-03-22T10:05:00\"\n}"
+            },
+            {
+              "name": "404 Not Found",
+              "status": "Not Found",
+              "code": 404,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"status\": 404,\n  \"error\": \"Not Found\",\n  \"message\": \"Post not found with id: 999\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Post by Slug",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/posts/slug/getting-started-with-spring-boot",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "posts", "slug", "getting-started-with-spring-boot"]
+            },
+            "description": "Get a single post by its URL-friendly slug. Public — no auth required.\n\nUsed for SEO-friendly frontend routing (e.g., `/blog/getting-started-with-spring-boot`)."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"id\": 1,\n  \"title\": \"Getting Started with Spring Boot\",\n  \"slug\": \"getting-started-with-spring-boot\",\n  \"status\": \"PUBLISHED\"\n}"
+            },
+            {
+              "name": "404 Not Found",
+              "status": "Not Found",
+              "code": 404,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"status\": 404,\n  \"error\": \"Not Found\",\n  \"message\": \"Post not found with slug: unknown-slug\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Update Post",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Getting Started with Spring Boot (Updated)\",\n  \"content\": \"Spring Boot makes it easy to create stand-alone, production-grade applications. This updated version covers the latest Spring Boot 4 features and improvements introduced in early 2026.\",\n  \"excerpt\": \"Updated guide covering Spring Boot 4 and Java 21 features.\",\n  \"categoryId\": 1,\n  \"tagIds\": [1, 2, 3],\n  \"status\": \"DRAFT\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/posts/1",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "posts", "1"]
+            },
+            "description": "Update an existing post. Only the post author or an ADMIN can update.\n\n**Required role:** AUTHOR or ADMIN\n\nAll fields are optional — only include what you want to change. The slug is regenerated automatically if the title changes.\n\n**Status values:** `DRAFT` | `PUBLISHED` | `ARCHIVED`"
+          },
+          "response": [
+            {
+              "name": "200 OK — post updated",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"id\": 1,\n  \"title\": \"Getting Started with Spring Boot (Updated)\",\n  \"slug\": \"getting-started-with-spring-boot-updated\",\n  \"status\": \"DRAFT\",\n  \"updatedAt\": \"2026-03-22T11:00:00\"\n}"
+            },
+            {
+              "name": "403 Forbidden — not the owner",
+              "status": "Forbidden",
+              "code": 403,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"status\": 403,\n  \"error\": \"Forbidden\",\n  \"message\": \"You are not authorized to update this post\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Delete Post",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/posts/1",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "posts", "1"]
+            },
+            "description": "Soft-delete a post (sets `isDeleted = true`). Only the post author or ADMIN can delete.\n\n**Required role:** AUTHOR or ADMIN\n\nThe post is not permanently removed from the database. It is excluded from all public queries."
+          },
+          "response": [
+            {
+              "name": "204 No Content — deleted",
+              "status": "No Content",
+              "code": 204,
+              "header": []
+            },
+            {
+              "name": "403 Forbidden",
+              "status": "Forbidden",
+              "code": 403,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"status\": 403,\n  \"error\": \"Forbidden\",\n  \"message\": \"You are not authorized to delete this post\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Publish Post",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": { "mode": "raw", "raw": "" },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/posts/1/publish",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "posts", "1", "publish"]
+            },
+            "description": "Publish a draft post. Sets `status = PUBLISHED` and records `publishedAt` timestamp.\n\n**Required role:** AUTHOR or ADMIN\n\nNo request body needed. The post author or an ADMIN can publish."
+          },
+          "response": [
+            {
+              "name": "200 OK — post published",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"id\": 1,\n  \"title\": \"Getting Started with Spring Boot\",\n  \"status\": \"PUBLISHED\",\n  \"publishedAt\": \"2026-03-22T12:00:00\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Upload / Replace Featured Image",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": [],
+                  "description": "Required. Image file — JPEG, PNG, GIF, or WebP."
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/posts/1/image",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "posts", "1", "image"]
+            },
+            "description": "Upload or replace the featured image for an existing post.\n\n**Required role:** AUTHOR (must own the post) or ADMIN\n\n**Content-Type:** `multipart/form-data` (set automatically by Postman).\n\nIf the post already has a featured image, the old file is deleted from disk before the new one is stored.\n\n**Form field:** `file` — select an image file in Postman (Body → form-data → key=`file`, type=File)."
+          },
+          "response": [
+            {
+              "name": "200 OK — image uploaded",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"id\": 1,\n  \"title\": \"Getting Started with Spring Boot\",\n  \"featuredImageUrl\": \"/uploads/posts/550e8400-e29b-41d4-a716-446655440000.jpg\",\n  \"status\": \"DRAFT\"\n}"
+            },
+            {
+              "name": "400 Bad Request — file is empty",
+              "status": "Bad Request",
+              "code": 400,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"status\": 400,\n  \"error\": \"Bad Request\",\n  \"message\": \"File is empty\"\n}"
+            },
+            {
+              "name": "403 Forbidden — not owner or admin",
+              "status": "Forbidden",
+              "code": 403,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"status\": 403,\n  \"error\": \"Forbidden\",\n  \"message\": \"You are not authorized to upload an image for this post\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Posts by User",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/posts/user/1?page=0&size=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "posts", "user", "1"],
+              "query": [
+                { "key": "page", "value": "0" },
+                { "key": "size", "value": "10" }
+              ]
+            },
+            "description": "Get all posts by a specific author (by user ID) with pagination. Public — no auth required.\n\nReturns all post statuses for that user (not filtered to PUBLISHED only)."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"content\": [],\n  \"totalElements\": 0,\n  \"totalPages\": 0\n}"
+            }
+          ]
+        },
+        {
+          "name": "Search Posts",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/posts/search?query=spring+boot&page=0&size=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "posts", "search"],
+              "query": [
+                { "key": "query", "value": "spring boot", "description": "Search term (searches title and content)" },
+                { "key": "page", "value": "0" },
+                { "key": "size", "value": "10" }
+              ]
+            },
+            "description": "Full-text search across post titles and content. Public — no auth required.\n\nOnly searches PUBLISHED, non-deleted posts. Results sorted by `publishedAt` descending."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"content\": [],\n  \"totalElements\": 0,\n  \"totalPages\": 0\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Posts by Category",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/posts/category/1?page=0&size=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "posts", "category", "1"],
+              "query": [
+                { "key": "page", "value": "0" },
+                { "key": "size", "value": "10" }
+              ]
+            },
+            "description": "Get all published posts in a specific category with pagination. Public — no auth required.\n\nReturns 404 if the category ID does not exist."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"content\": [],\n  \"totalElements\": 0,\n  \"totalPages\": 0\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Posts by Tag",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/posts/tag/1",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "posts", "tag", "1"]
+            },
+            "description": "Get all published posts with a specific tag. Public — no auth required.\n\nReturns a flat list (not paginated). Returns 404 if the tag ID does not exist."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "[]"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Categories",
+      "description": "Category management.\n\n**Read operations:** Public — no auth required.\n**Write operations (create/update/delete):** ADMIN only.",
+      "item": [
+        {
+          "name": "Create Category",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Backend Development\",\n  \"description\": \"Articles covering server-side technologies, APIs, databases, and infrastructure.\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/categories",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "categories"]
+            },
+            "description": "Create a new category. A slug is generated automatically from the name.\n\n**Required role:** ADMIN\n\n**Fields:**\n- `name` (required) — 2–100 characters\n- `description` (optional) — up to 500 characters"
+          },
+          "response": [
+            {
+              "name": "201 Created",
+              "status": "Created",
+              "code": 201,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"id\": 1,\n  \"name\": \"Backend Development\",\n  \"slug\": \"backend-development\",\n  \"description\": \"Articles covering server-side technologies, APIs, databases, and infrastructure.\"\n}"
+            },
+            {
+              "name": "403 Forbidden — not ADMIN",
+              "status": "Forbidden",
+              "code": 403,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"status\": 403,\n  \"error\": \"Forbidden\",\n  \"message\": \"Access Denied\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get All Categories",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/categories",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "categories"]
+            },
+            "description": "Returns all categories ordered by name. Public — no auth required.\n\nTypically used to populate category dropdowns and navigation menus."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "[\n  {\n    \"id\": 1,\n    \"name\": \"Backend Development\",\n    \"slug\": \"backend-development\",\n    \"description\": \"Server-side technologies.\"\n  },\n  {\n    \"id\": 2,\n    \"name\": \"Frontend\",\n    \"slug\": \"frontend\",\n    \"description\": \"UI and browser technologies.\"\n  }\n]"
+            }
+          ]
+        },
+        {
+          "name": "Get Category by ID",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/categories/1",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "categories", "1"]
+            },
+            "description": "Get a single category by its database ID. Public — no auth required."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"id\": 1,\n  \"name\": \"Backend Development\",\n  \"slug\": \"backend-development\",\n  \"description\": \"Server-side technologies.\"\n}"
+            },
+            {
+              "name": "404 Not Found",
+              "status": "Not Found",
+              "code": 404,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"status\": 404,\n  \"error\": \"Not Found\",\n  \"message\": \"Category not found with id: 999\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Category by Slug",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/categories/slug/backend-development",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "categories", "slug", "backend-development"]
+            },
+            "description": "Get a single category by its URL-friendly slug. Public — no auth required.\n\nUsed for SEO-friendly routing (e.g., `/categories/backend-development`)."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"id\": 1,\n  \"name\": \"Backend Development\",\n  \"slug\": \"backend-development\",\n  \"description\": \"Server-side technologies.\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Update Category",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Backend & APIs\",\n  \"description\": \"Server-side development, REST APIs, databases, and cloud infrastructure.\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/categories/1",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "categories", "1"]
+            },
+            "description": "Update a category's name and/or description. The slug is regenerated automatically if the name changes.\n\n**Required role:** ADMIN"
+          },
+          "response": [
+            {
+              "name": "200 OK — updated",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"id\": 1,\n  \"name\": \"Backend & APIs\",\n  \"slug\": \"backend-apis\",\n  \"description\": \"Server-side development, REST APIs, databases, and cloud infrastructure.\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Delete Category",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/categories/1",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "categories", "1"]
+            },
+            "description": "Delete a category.\n\n**Required role:** ADMIN\n\nWill fail if any posts are currently assigned to this category — reassign or delete those posts first."
+          },
+          "response": [
+            {
+              "name": "204 No Content — deleted",
+              "status": "No Content",
+              "code": 204,
+              "header": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Tags",
+      "description": "Tag management.\n\n**Read operations:** Public — no auth required.\n**Write operations (create/delete):** ADMIN only.\n\nThere is no update endpoint for tags by design — rename by deleting and recreating.",
+      "item": [
+        {
+          "name": "Create Tag",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Spring Boot\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/tags",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "tags"]
+            },
+            "description": "Create a new tag. A slug is generated automatically from the name.\n\n**Required role:** ADMIN\n\n**Fields:**\n- `name` (required) — 2–50 characters"
+          },
+          "response": [
+            {
+              "name": "201 Created",
+              "status": "Created",
+              "code": 201,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"id\": 1,\n  \"name\": \"Spring Boot\",\n  \"slug\": \"spring-boot\"\n}"
+            },
+            {
+              "name": "403 Forbidden — not ADMIN",
+              "status": "Forbidden",
+              "code": 403,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"status\": 403,\n  \"error\": \"Forbidden\",\n  \"message\": \"Access Denied\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get All Tags",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/tags",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "tags"]
+            },
+            "description": "Returns all tags ordered by name. Public — no auth required.\n\nTypically used to populate tag clouds and post filter UIs."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "[\n  { \"id\": 1, \"name\": \"Java\", \"slug\": \"java\" },\n  { \"id\": 2, \"name\": \"Spring Boot\", \"slug\": \"spring-boot\" },\n  { \"id\": 3, \"name\": \"REST API\", \"slug\": \"rest-api\" }\n]"
+            }
+          ]
+        },
+        {
+          "name": "Get Tag by ID",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/tags/1",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "tags", "1"]
+            },
+            "description": "Get a single tag by its database ID. Public — no auth required."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"id\": 1,\n  \"name\": \"Spring Boot\",\n  \"slug\": \"spring-boot\"\n}"
+            },
+            {
+              "name": "404 Not Found",
+              "status": "Not Found",
+              "code": 404,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"status\": 404,\n  \"error\": \"Not Found\",\n  \"message\": \"Tag not found with id: 999\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Delete Tag",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/tags/1",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "tags", "1"]
+            },
+            "description": "Delete a tag.\n\n**Required role:** ADMIN\n\nThe tag is automatically removed from all posts that reference it (cascade handled by JPA via the `post_tags` junction table)."
+          },
+          "response": [
+            {
+              "name": "204 No Content — deleted",
+              "status": "No Content",
+              "code": 204,
+              "header": []
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
