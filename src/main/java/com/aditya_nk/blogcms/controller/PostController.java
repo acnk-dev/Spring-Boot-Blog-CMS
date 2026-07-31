@@ -11,6 +11,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -49,22 +50,43 @@ public class PostController {
     private final PostService postService;
 
     /**
-     * Create a new post.
+     * Create a new post, with an optional featured image in the same request.
      * Only authenticated users with AUTHOR or ADMIN role can create posts.
      *
-     * @param request the post creation request
-     * @param user the authenticated user (injected by Spring Security)
-     * @return the created post response
+     * Accepts multipart/form-data with two parts:
+     *   - "post"  → CreatePostRequest as JSON (required)
+     *   - "file"  → image file (optional)
+     *
+     * If a file is provided the image is uploaded immediately after the post
+     * is persisted, so the returned PostResponse already contains the
+     * featuredImageUrl. If no file is provided the post is created without
+     * an image; one can be added later via POST /api/v1/posts/{id}/image.
+     *
+     * Error behaviour:
+     *   - Post creation fails → error returned, no file upload attempted.
+     *   - Post created but file upload fails → post exists without image
+     *     (acceptable; image can be retried via the dedicated endpoint).
+     *
+     * @param request the post creation request (JSON part named "post")
+     * @param file    optional image file (form part named "file")
+     * @param user    the authenticated user (injected by Spring Security)
+     * @return 201 Created with the PostResponse (featuredImageUrl populated if file was provided)
      */
-    @PostMapping
+    @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @PreAuthorize("hasAnyRole('AUTHOR', 'ADMIN')")
     public ResponseEntity<PostResponse> createPost(
-            @Valid @RequestBody CreatePostRequest request,
+            @Valid @RequestPart("post") CreatePostRequest request,
+            @RequestPart(value = "file", required = false) MultipartFile file,
             @AuthenticationPrincipal User user) {
 
         log.info("Creating post with title: '{}' by user: {}", request.getTitle(), user.getEmail());
 
         PostResponse response = postService.createPost(request, user.getId());
+
+        if (file != null && !file.isEmpty()) {
+            log.info("Uploading featured image for new post {} by user: {}", response.getId(), user.getEmail());
+            response = postService.uploadFeaturedImage(response.getId(), file, user.getId());
+        }
 
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
