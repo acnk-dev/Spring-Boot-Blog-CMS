@@ -20,6 +20,7 @@ import com.aditya_nk.blogcms.service.FileStorageService;
 import com.aditya_nk.blogcms.service.PostService;
 import com.aditya_nk.blogcms.util.SlugUtil;
 import lombok.RequiredArgsConstructor;
+import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.*;
 import org.springframework.stereotype.Service;
@@ -67,6 +68,7 @@ public class PostServiceImpl implements PostService {
 
     @Override
     @Transactional
+    @CacheEvict(value = "posts", allEntries = true)
     public PostResponse createPost(CreatePostRequest request, Long userId) {
         // Find the author
         User author = userRepository.findById(userId)
@@ -111,6 +113,7 @@ public class PostServiceImpl implements PostService {
 
     @Override
     @Transactional
+    @CacheEvict(value = "posts", allEntries = true)
     public PostResponse updatePost(Long postId, UpdatePostRequest request, Long userId) {
         Post post = postRepository.findById(postId)
                 .filter(p -> !p.getIsDeleted())
@@ -174,6 +177,7 @@ public class PostServiceImpl implements PostService {
 
     @Override
     @Transactional
+    @CacheEvict(value = "posts", allEntries = true)
     public void deletePost(Long postId, Long userId) {
         Post post = postRepository.findById(postId)
                 .filter(p -> !p.getIsDeleted())
@@ -318,6 +322,7 @@ public class PostServiceImpl implements PostService {
 
     @Override
     @Transactional
+    @CacheEvict(value = "posts", allEntries = true)
     public PostResponse publishPost(Long postId, Long userId) {
         Post post = postRepository.findById(postId)
                 .filter(p -> !p.getIsDeleted())
@@ -341,6 +346,7 @@ public class PostServiceImpl implements PostService {
 
     @Override
     @Transactional
+    @CacheEvict(value = "posts", allEntries = true)
     public PostResponse uploadFeaturedImage(Long postId, MultipartFile file, Long userId) {
         // 1. Find post
         Post post = postRepository.findById(postId)
