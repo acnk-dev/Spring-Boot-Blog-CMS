@@ -20,6 +20,7 @@ import com.aditya_nk.blogcms.service.FileStorageService;
 import com.aditya_nk.blogcms.service.PostService;
 import com.aditya_nk.blogcms.util.SlugUtil;
 import lombok.RequiredArgsConstructor;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.*;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -189,6 +190,7 @@ public class PostServiceImpl implements PostService {
     }
 
     @Override
+    @Cacheable(value = "posts", key = "#postId")
     public PostResponse getPostById(Long postId) {
         Post post = postRepository.findById(postId)
                 .filter(p -> !p.getIsDeleted())
@@ -198,6 +200,7 @@ public class PostServiceImpl implements PostService {
     }
 
     @Override
+    @Cacheable(value = "posts", key = "#slug")
     public PostResponse getPostBySlug(String slug) {
         Post post = postRepository.findBySlugAndIsDeletedFalse(slug)
                 .orElseThrow(() -> new ResourceNotFoundException("Post", "slug", slug));
@@ -206,6 +209,7 @@ public class PostServiceImpl implements PostService {
     }
 
     @Override
+    @Cacheable(value = "posts", key = "'all_' + #page + '_' + #size + '_' + #sortBy + '_' + #sortDir", condition = "#page == 0")
     public Page<PostResponse> getAllPosts(int page, int size, String sortBy, String sortDir) {
         Sort sort = sortDir.equalsIgnoreCase("asc")
                 ? Sort.by(sortBy).ascending()
@@ -263,6 +267,7 @@ public class PostServiceImpl implements PostService {
     }
 
     @Override
+    @Cacheable(value = "posts", key = "'category_' + #categoryId + '_' + #page + '_' + #size")
     public Page<PostResponse> getPostsByCategory(Long categoryId, int page, int size) {
         // Verify category exists
         if (!categoryRepository.existsById(categoryId)) {

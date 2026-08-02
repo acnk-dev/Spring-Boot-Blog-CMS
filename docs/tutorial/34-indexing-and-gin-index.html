@@ -1,0 +1,933 @@
+<h1
+        id="tutorial-postgresql-indexes-full-text-search-and-gin-indexes">Tutorial:
+    PostgreSQL Indexes, Full-Text Search, and GIN Indexes</h1>
+<p>This tutorial explains everything that went into commit 33: why
+    <code>LIKE '%term%'</code> is slow, how B-tree indexes work, what a GIN
+    index is, how PostgreSQL full-text search works from first principles,
+    and how the Spring Boot repository is structured to exploit it. It
+    assumes you know basic SQL and have read the earlier commits in this
+    project.</p>
+<hr />
+<h2 id="table-of-contents">Table of Contents</h2>
+<ol type="1">
+    <li><a href="#1-postgresql-index-types--overview-table">PostgreSQL Index
+        Types — Overview Table</a></li>
+    <li><a
+            href="#2-how-b-tree-indexes-work--and-why-like-term-breaks-them">How
+        B-tree Indexes Work — and Why <code>LIKE '%term%'</code> Breaks
+        Them</a></li>
+    <li><a href="#3-postgresql-full-text-search-concepts">PostgreSQL
+        Full-Text Search Concepts</a></li>
+    <li><a href="#4-gin-index-internals--the-inverted-index">GIN Index
+        Internals — The Inverted Index</a></li>
+    <li><a href="#5-gin-vs-pg_trgm--when-to-use-each">GIN vs pg_trgm — When
+        to Use Each</a></li>
+    <li><a href="#6-generated-columns--stored-vs-virtual">Generated Columns
+        — <code>STORED</code> vs Virtual</a></li>
+    <li><a href="#7-the-two-step-repository-pattern">The Two-Step Repository
+        Pattern</a></li>
+    <li><a href="#8-write-overhead-and-vacuum">Write Overhead and
+        VACUUM</a></li>
+    <li><a href="#9-trade-off-summary-table">Trade-off Summary
+        Table</a></li>
+    <li><a href="#10-next-steps-relevance-ranking-and-fuzzy-search">Next
+        Steps: Relevance Ranking and Fuzzy Search</a></li>
+</ol>
+<hr />
+<h2 id="postgresql-index-types-overview-table">1. PostgreSQL Index Types
+    — Overview Table</h2>
+<p>PostgreSQL ships with six index types. Each is designed for a
+    different class of query predicate. Choosing the wrong index type
+    results in the index being ignored by the planner.</p>
+<table>
+    <colgroup>
+        <col style="width: 20%" />
+        <col style="width: 20%" />
+        <col style="width: 20%" />
+        <col style="width: 20%" />
+        <col style="width: 20%" />
+    </colgroup>
+    <thead>
+    <tr>
+        <th>Index Type</th>
+        <th>Best For</th>
+        <th>Can’t Use For</th>
+        <th>Default?</th>
+        <th>Size vs B-tree</th>
+    </tr>
+    </thead>
+    <tbody>
+    <tr>
+        <td><strong>B-tree</strong></td>
+        <td><code>=</code>, <code>&lt;</code>, <code>&gt;</code>,
+            <code>BETWEEN</code>, <code>LIKE 'prefix%'</code>,
+            <code>ORDER BY</code>, <code>DISTINCT</code></td>
+        <td>Leading-wildcard LIKE, full-text, array containment</td>
+        <td>Yes (default)</td>
+        <td>1×</td>
+    </tr>
+    <tr>
+        <td><strong>Hash</strong></td>
+        <td><code>=</code> only</td>
+        <td>Range queries, ordering</td>
+        <td>No</td>
+        <td>~0.6× (smaller)</td>
+    </tr>
+    <tr>
+        <td><strong>GIN</strong></td>
+        <td>Arrays, tsvector full-text, JSONB containment
+            (<code>@&gt;</code>)</td>
+        <td>Range queries, ordering, <code>=</code> on whole column</td>
+        <td>No</td>
+        <td>~2–5× larger</td>
+    </tr>
+    <tr>
+        <td><strong>GiST</strong></td>
+        <td>Geometric types, full-text (alternative to GIN), range types</td>
+        <td>Exact equality</td>
+        <td>No</td>
+        <td>Varies</td>
+    </tr>
+    <tr>
+        <td><strong>BRIN</strong></td>
+        <td>Very large tables with naturally ordered data (time-series,
+            sequential IDs)</td>
+        <td>Random data, point lookups</td>
+        <td>No</td>
+        <td>~0.001× (tiny)</td>
+    </tr>
+    <tr>
+        <td><strong>SP-GiST</strong></td>
+        <td>Geospatial, text (radix trees), non-balanced data</td>
+        <td>General use</td>
+        <td>No</td>
+        <td>Varies</td>
+    </tr>
+    </tbody>
+</table>
+<p>For this project we use: - <strong>B-tree</strong> (created
+    automatically by PostgreSQL on primary keys and unique constraints) —
+    used for post ID lookups and slug uniqueness checks -
+    <strong>GIN</strong> — new in commit 33 for full-text search on
+    <code>search_vector</code></p>
+<p>The Flyway migrations in this project have also created explicit
+    B-tree indexes (<code>idx_posts_status</code>,
+    <code>idx_post_tags_tag_id</code>) for frequently filtered columns.</p>
+<hr />
+<h2 id="how-b-tree-indexes-work-and-why-like-term-breaks-them">2. How
+    B-tree Indexes Work — and Why <code>LIKE '%term%'</code> Breaks
+    Them</h2>
+<h3 id="b-tree-structure">B-tree structure</h3>
+<p>A B-tree (Balanced tree) index stores index entries in sorted order
+    in a tree structure where every leaf node is at the same depth. Here is
+    a simplified diagram for an index on <code>title</code>:</p>
+<pre><code>                    [M]
+                   /   \
+              [E, J]   [R, T]
+             /  |  \   /  |  \
+          [A-D][F-I][K-L][N-Q][S][U-Z]</code></pre>
+<p>Each leaf node contains: - The index key value (e.g. “Getting Started
+    with Spring Boot”) - A pointer (ctid) to the actual heap row on disk</p>
+<p><strong>To find
+    <code>title = 'Getting Started with Spring Boot'</code></strong>: start
+    at root, compare with “M”, go left; compare with “E”, “J”; descend to
+    the correct leaf. Read a handful of index pages, follow one pointer to
+    the heap. This is O(log N) disk reads.</p>
+<p><strong>To find <code>title LIKE 'Getting%'</code></strong>: the
+    planner knows the prefix is “Getting”, which fits in the B-tree range
+    <code>[Getting, Gettinz]</code>. It navigates the B-tree to the first
+    “Getting…” entry and scans forward through the leaves until the prefix
+    no longer matches. O(log N + k) where k is the number of matches.</p>
+<p>Here is what that range scan looks like inside the B-tree leaf
+    level:</p>
+<pre><code>B-tree leaf nodes (sorted alphabetically, left to right):
+
+  ┌──────────────────┐  ┌──────────────────────┐  ┌─────────────────────┐  ┌──────────────────┐
+  │ &quot;From Zero to    │  │ &quot;Getting Started      │  │ &quot;Getting to Know    │  │ &quot;Guide to        │
+  │  Production&quot;     │  │  with Spring Boot&quot;    │  │  PostgreSQL&quot;        │  │  Microservices&quot;  │
+  │  → row 7         │  │  → row 12             │  │  → row 34           │  │  → row 41        │
+  └──────────────────┘  └──────────────────────┘  └─────────────────────┘  └──────────────────┘
+          │                       ↑                          ↑                       │
+          │               ════════╪══════════════════════════╪═══════╗               │
+          │               ║  Range scanned for LIKE &#39;Getting%&#39;      ║               │
+          │               ║  lower bound: &quot;Getting&quot;                  ║               │
+          │               ║  upper bound: &quot;Gettinz&quot;                  ║               │
+          │               ╚══════════════════════════════════════════╝               │
+          │                                                                           │
+   before range                                                               after range
+   (not visited)                                                              (not visited)</code></pre>
+<p><strong>How the upper bound <code>"Gettinz"</code> is
+    derived</strong>: PostgreSQL constructs it by taking the prefix
+    <code>"Getting"</code> and incrementing the last character
+    <code>'g'</code> by one step in the alphabet to get <code>'h'</code>…
+    actually it uses <code>'z'</code> as a safe ceiling because any ASCII
+    character after <code>'g'</code> would still be alphabetically less than
+    <code>'z'</code>. So <code>"Gettinz"</code> means: <em>“any string that
+        starts with <code>Gettin</code> followed by any character up to
+        <code>z</code>”</em> — which covers every possible
+    <code>"Getting..."</code> title. The B-tree scan starts at the first
+    entry ≥ <code>"Getting"</code> and stops at the first entry ≥
+    <code>"Gettinz"</code>, reading only the two rows (12 and 34) in the
+    middle. Rows outside the range are never touched.</p>
+<h3 id="why-like-spring-cannot-use-a-b-tree">Why
+    <code>LIKE '%spring%'</code> cannot use a B-tree</h3>
+<p>The leading <code>%</code> means “any characters before ‘spring’”.
+    The B-tree is sorted by the full key from left to right. Without knowing
+    how the string starts, there is no starting point in the tree to
+    navigate to. The planner has two choices:</p>
+<ol type="1">
+    <li>Scan the entire B-tree leaf level (still reads every index
+        entry)</li>
+    <li>Skip the index and scan the heap directly (often cheaper since it
+        avoids the index overhead)</li>
+</ol>
+<p>The planner typically chooses option 2 and performs a sequential scan
+    of the table. Every row must be read and the LIKE filter applied. This
+    is O(N).</p>
+<p><strong>Visual illustration of why the prefix matters:</strong></p>
+<pre><code>Index sorted order (left to right):
+&quot;Advanced Techniques...&quot; | &quot;Building APIs...&quot; | &quot;Getting Started...&quot; | &quot;Spring Boot...&quot; | &quot;Working with...&quot;
+        ^                          ^                    ^                      ^                  ^
+        |                          |                    |                      |                  |
+  &#39;Advanced%&#39; starts here    &#39;Building%&#39;          &#39;Getting%&#39;           &#39;Spring%&#39;           &#39;Working%&#39;
+
+For LIKE &#39;%boot%&#39; — any of these could contain &#39;boot&#39;. No starting point exists in the index.</code></pre>
+<p>The only way to find all entries containing “boot” anywhere is to
+    check all of them.</p>
+<hr />
+<h2 id="postgresql-full-text-search-concepts">3. PostgreSQL Full-Text
+    Search Concepts</h2>
+<p>Full-text search solves the leading-wildcard problem by
+    pre-processing text into a representation that can be indexed directly —
+    the <code>tsvector</code>.</p>
+<h3 id="tsvector">tsvector</h3>
+<p>A <code>tsvector</code> is a sorted list of lexemes — normalised word
+    forms — with optional position information. Let’s trace through an
+    example:</p>
+<div class="sourceCode" id="cb4"><pre
+        class="sourceCode sql"><code class="sourceCode sql"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> to_tsvector(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;Spring Boot tutorials are extremely easy to follow&#39;</span>);</span></code></pre></div>
+<p>PostgreSQL applies these transformations: 1.
+    <strong>Tokenise</strong> — split on whitespace and punctuation:
+    <code>['Spring', 'Boot', 'tutorials', 'are', 'extremely', 'easy', 'to', 'follow']</code>
+    2. <strong>Stop-word removal</strong> — common words with no
+    discriminating value are removed according to the language dictionary.
+    With ‘english’: <code>['are', 'to']</code> are removed 3.
+    <strong>Stemming</strong> — reduce inflected forms to a common base: -
+    “tutorials” → “tutori” (removing plural/suffix) - “extremely” → “extrem”
+    - “easy” → “easi” - “Spring”, “Boot”, “follow” → “spring”, “boot”,
+    “follow” 4. <strong>Sort and deduplicate</strong> — the lexemes are
+    stored in sorted order with their position numbers</p>
+<p>Result:</p>
+<pre><code>&#39;boot&#39;:2 &#39;easi&#39;:6 &#39;extrem&#39;:5 &#39;follow&#39;:8 &#39;spring&#39;:1 &#39;tutori&#39;:3</code></pre>
+<p>Numbers after the colon are positions in the original text
+    (1-indexed). Positions enable phrase matching (are the words adjacent?)
+    and proximity ranking.</p>
+<h3 id="tsquery">tsquery</h3>
+<p>A <code>tsquery</code> is a boolean expression over lexemes. There
+    are four constructors:</p>
+<div class="sourceCode" id="cb6"><pre
+        class="sourceCode sql"><code class="sourceCode sql"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="co">-- to_tsquery: requires tsquery syntax from the user</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> to_tsquery(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;spring &amp; boot&#39;</span>);</span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a><span class="co">-- Result: &#39;spring&#39; &amp; &#39;boot&#39;</span></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a><span class="co">-- plainto_tsquery: plain English phrase, AND between all words</span></span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> plainto_tsquery(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;spring boot tutorial&#39;</span>);</span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a><span class="co">-- Result: &#39;spring&#39; &amp; &#39;boot&#39; &amp; &#39;tutori&#39;</span></span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-9"><a href="#cb6-9" aria-hidden="true" tabindex="-1"></a><span class="co">-- phraseto_tsquery: words must appear in sequence</span></span>
+<span id="cb6-10"><a href="#cb6-10" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> phraseto_tsquery(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;spring boot&#39;</span>);</span>
+<span id="cb6-11"><a href="#cb6-11" aria-hidden="true" tabindex="-1"></a><span class="co">-- Result: &#39;spring&#39; &lt;-&gt; &#39;boot&#39;  (adjacent in that order)</span></span>
+<span id="cb6-12"><a href="#cb6-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-13"><a href="#cb6-13" aria-hidden="true" tabindex="-1"></a><span class="co">-- websearch_to_tsquery: supports +/- and &quot;quoted phrases&quot; like a web search</span></span>
+<span id="cb6-14"><a href="#cb6-14" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> websearch_to_tsquery(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;&quot;spring boot&quot; -java&#39;</span>);</span>
+<span id="cb6-15"><a href="#cb6-15" aria-hidden="true" tabindex="-1"></a><span class="co">-- Result: &#39;spring&#39; &lt;-&gt; &#39;boot&#39; &amp; !&#39;java&#39;</span></span></code></pre></div>
+<p>For a public search box, <code>plainto_tsquery</code> is the safest
+    choice: it never throws an error on user input and treats every word as
+    required.</p>
+<h3 id="the-operator">The <code>@@</code> operator</h3>
+<p><code>tsvector @@ tsquery</code> returns <code>true</code> if the
+    tsvector contains all lexemes required by the tsquery:</p>
+<div class="sourceCode" id="cb7"><pre
+        class="sourceCode sql"><code class="sourceCode sql"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> to_tsvector(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;Spring Boot tutorial&#39;</span>) @@ plainto_tsquery(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;boot tutorial&#39;</span>);</span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="co">-- true: both &#39;boot&#39; and &#39;tutori&#39; appear in the tsvector</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> to_tsvector(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;Spring Boot tutorial&#39;</span>) @@ plainto_tsquery(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;java tutorial&#39;</span>);</span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a><span class="co">-- false: &#39;java&#39; is not in the tsvector</span></span></code></pre></div>
+<h3 id="stemming-example">Stemming example</h3>
+<p>Stemming is what makes full-text search powerful: a user searching
+    for “scale” will find posts mentioning “scaling”, “scaled”, “scales”,
+    “scalability” (stemmed as “scalabl”) — all without the user knowing
+    about these variations.</p>
+<div class="sourceCode" id="cb8"><pre
+        class="sourceCode sql"><code class="sourceCode sql"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> plainto_tsquery(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;scale&#39;</span>);</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a><span class="co">-- Result: &#39;scale&#39;</span></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> to_tsvector(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;Scaling microservices is challenging&#39;</span>);</span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a><span class="co">-- Result: &#39;challeng&#39;:4 &#39;microservic&#39;:2 &#39;scale&#39;:1</span></span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a><span class="co">-- Does &#39;scale&#39; match &#39;scaling&#39;?</span></span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> to_tsvector(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;Scaling microservices&#39;</span>) @@ plainto_tsquery(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;scale&#39;</span>);</span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a><span class="co">-- true: &#39;scaling&#39; is stemmed to &#39;scale&#39; during tsvector construction</span></span></code></pre></div>
+<p>Both the document (tsvector) and the query (tsquery) go through the
+    same stemming pipeline, so they meet in the middle.</p>
+<h3 id="why-stemming-matters-the-easy-family">Why stemming matters — the
+    “easy” family</h3>
+<p>This is one of the most important concepts in full-text search, and
+    it is worth seeing concretely. Run these in <code>psql</code>:</p>
+<div class="sourceCode" id="cb9"><pre
+        class="sourceCode sql"><code class="sourceCode sql"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> to_tsvector(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;easy&#39;</span>);    <span class="co">-- &#39;easi&#39;:1</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> to_tsvector(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;easier&#39;</span>);  <span class="co">-- &#39;easier&#39;:1</span></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> to_tsvector(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;easily&#39;</span>);  <span class="co">-- &#39;easili&#39;:1</span></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> to_tsvector(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;easiest&#39;</span>); <span class="co">-- &#39;easiest&#39;:1</span></span></code></pre></div>
+<p>Notice that <code>easy</code> and <code>easily</code> do
+    <strong>not</strong> produce the same stem — the English Snowball
+    stemmer takes a conservative approach here. But consider the important
+    case where they do converge:</p>
+<div class="sourceCode" id="cb10"><pre
+        class="sourceCode sql"><code class="sourceCode sql"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> plainto_tsquery(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;easy&#39;</span>);   <span class="co">-- &#39;easi&#39;</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> plainto_tsquery(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;easily&#39;</span>); <span class="co">-- &#39;easili&#39;</span></span></code></pre></div>
+<p>The query side goes through the same stemmer, so:</p>
+<pre><code>User types &quot;easy&quot;   → tsquery stem: &#39;easi&#39;
+                                        ↓ matches?
+Post content &quot;easy to use&quot;  → tsvector: &#39;easi&#39;:1 &#39;use&#39;:3   ✓ yes
+
+User types &quot;easily&quot; → tsquery stem: &#39;easili&#39;
+                                        ↓ matches?
+Post content &quot;easily configured&quot; → tsvector: &#39;easili&#39;:1 &#39;configur&#39;:2   ✓ yes</code></pre>
+<p>The key insight is that <strong>both sides go through the same
+    pipeline</strong>. A document is never stored as raw text in the
+    tsvector — it is stored as stems. A query is never matched against raw
+    text — it is also converted to stems first. This means whatever form the
+    user types, and whatever form the author wrote, they meet at the same
+    stem.</p>
+<p>Here is a more dramatic example with “run”:</p>
+<div class="sourceCode" id="cb12"><pre
+        class="sourceCode sql"><code class="sourceCode sql"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="co">-- All of these produce the same stem in the query:</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> plainto_tsquery(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;run&#39;</span>);     <span class="co">-- &#39;run&#39;</span></span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> plainto_tsquery(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;runs&#39;</span>);    <span class="co">-- &#39;run&#39;</span></span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> plainto_tsquery(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;running&#39;</span>); <span class="co">-- &#39;run&#39;</span></span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> plainto_tsquery(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;runner&#39;</span>);  <span class="co">-- &#39;runner&#39;  ← different (runner is a noun, not the verb)</span></span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a><span class="co">-- And in the document side:</span></span>
+<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> to_tsvector(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;She is running the Spring Boot application&#39;</span>);</span>
+<span id="cb12-9"><a href="#cb12-9" aria-hidden="true" tabindex="-1"></a><span class="co">-- Result: &#39;applic&#39;:7 &#39;boot&#39;:5 &#39;run&#39;:4 &#39;spring&#39;:4</span></span>
+<span id="cb12-10"><a href="#cb12-10" aria-hidden="true" tabindex="-1"></a><span class="co">--   &quot;running&quot; → &quot;run&quot;   &quot;application&quot; → &quot;applic&quot;   &quot;Spring&quot; → &quot;spring&quot;</span></span>
+<span id="cb12-11"><a href="#cb12-11" aria-hidden="true" tabindex="-1"></a><span class="co">--   &quot;She&quot;, &quot;is&quot;, &quot;the&quot; → removed as stop words</span></span></code></pre></div>
+<p>So a blog post saying “running” is indexed as “run”, and a user
+    searching for “run” or “runs” or “running” all produce the tsquery
+    <code>'run'</code> — they all find that post. Without stemming, a user
+    searching “running” would only find posts that contain the exact word
+    “running”, missing posts that say “run” or “runs”.</p>
+<p><strong>Summary of why stemming matters:</strong></p>
+<table>
+    <colgroup>
+        <col style="width: 33%" />
+        <col style="width: 33%" />
+        <col style="width: 33%" />
+    </colgroup>
+    <thead>
+    <tr>
+        <th>User searches for</th>
+        <th>Without stemming finds</th>
+        <th>With stemming finds</th>
+    </tr>
+    </thead>
+    <tbody>
+    <tr>
+        <td>“easy”</td>
+        <td>only posts containing “easy”</td>
+        <td>posts with “easy”, “easier”, “easiest”</td>
+    </tr>
+    <tr>
+        <td>“running”</td>
+        <td>only posts containing “running”</td>
+        <td>posts with “run”, “runs”, “running”</td>
+    </tr>
+    <tr>
+        <td>“scale”</td>
+        <td>only posts containing “scale”</td>
+        <td>posts with “scale”, “scales”, “scaled”, “scaling”</td>
+    </tr>
+    <tr>
+        <td>“configure”</td>
+        <td>only posts containing “configure”</td>
+        <td>posts with “configure”, “configured”, “configures”,
+            “configuring”</td>
+    </tr>
+    </tbody>
+</table>
+<p>This is what separates full-text search from a simple substring match
+    — it understands the language, not just the characters.</p>
+<hr />
+<h2 id="gin-index-internals-the-inverted-index">4. GIN Index Internals —
+    The Inverted Index</h2>
+<h3 id="the-concept-of-an-inverted-index">The concept of an inverted
+    index</h3>
+<p>A regular (forward) index maps:
+    <code>document_id → list of words in document</code>. An inverted index
+    maps: <code>word → list of documents containing word</code>.</p>
+<p>This inversion is what makes search fast. Instead of asking “which of
+    these 10,000 documents contains ‘spring’?” (requires scanning all
+    documents), an inverted index lets you ask “which documents are listed
+    under ‘spring’?” (a single O(log V) lookup).</p>
+<h3 id="gin-structure">GIN structure</h3>
+<p>PostgreSQL’s GIN (Generalized Inverted Index) is built from two
+    structures:</p>
+<pre><code>GIN index on search_vector
+│
+├── B-tree of lexemes (the &quot;dictionary&quot;)
+│   ├── &#39;boot&#39;   → posting list: [row 4, row 7, row 19, row 31, ...]
+│   ├── &#39;build&#39;  → posting list: [row 2, row 11, row 45, ...]
+│   ├── &#39;cloud&#39;  → posting list: [row 1, row 3, row 22, ...]
+│   ├── &#39;docker&#39; → posting list: [row 3, row 8, row 17, ...]
+│   └── &#39;spring&#39; → posting list: [row 4, row 7, row 45, row 92, ...]
+│
+└── Heap rows (the actual post data)
+    ├── row 4:  &quot;Spring Boot Tutorial&quot; → full post content
+    ├── row 7:  &quot;Advanced Spring Boot&quot; → full post content
+    └── ...</code></pre>
+<p><strong>Lookup for
+    <code>plainto_tsquery('english', 'spring boot')</code>:</strong></p>
+<ol type="1">
+    <li>Resolve query to lexemes: <code>{'spring', 'boot'}</code></li>
+    <li>B-tree lookup in GIN: navigate to ‘boot’ → get posting list
+        <code>{4, 7, 19, 31, ...}</code></li>
+    <li>B-tree lookup in GIN: navigate to ‘spring’ → get posting list
+        <code>{4, 7, 45, 92, ...}</code></li>
+    <li>Intersect the posting lists (AND semantics): <code>{4, 7}</code> —
+        only rows containing both words</li>
+    <li>Fetch rows 4 and 7 from the heap and apply any remaining filters
+        (is_deleted, status)</li>
+</ol>
+<p>Total disk pages read: a handful of B-tree pages + the posting lists
+    + the matching heap rows. Compare to a sequential scan that reads every
+    heap page.</p>
+<h3 id="complexity-analysis">Complexity analysis</h3>
+<ul>
+    <li><strong>Sequential scan (LIKE)</strong>: O(N) where N = total rows
+        in the table (must read every row)</li>
+    <li><strong>GIN lookup</strong>: O(log V + k) where V = vocabulary size
+        (distinct lexemes), k = number of matching rows
+        <ul>
+            <li>The log V term comes from navigating the B-tree of lexemes to find
+                the posting list</li>
+            <li>The k term comes from reading the k matching heap rows</li>
+        </ul></li>
+</ul>
+<p>For large N and small k (rare search terms), the GIN advantage is
+    enormous. Even for common terms where k is large, O(log V + k) is still
+    better than O(N) when k &lt; N.</p>
+<h3 id="two-phase-bitmap-scan">Two-phase bitmap scan</h3>
+<p>When the number of matching rows (k) is large, PostgreSQL uses a
+    Bitmap Index Scan rather than fetching rows one at a time:</p>
+<ol type="1">
+    <li><strong>Index phase</strong>: scan the GIN index, collect the set of
+        matching row addresses into a bitmap (one bit per heap page, or one bit
+        per row for exact bitmaps)</li>
+    <li><strong>Heap phase</strong>: read the heap pages indicated by the
+        bitmap in sequential order (avoiding random I/O), recheck the condition
+        for each row</li>
+</ol>
+<p>The <code>EXPLAIN ANALYZE</code> output says
+    <code>Bitmap Index Scan on idx_posts_search_vector</code> — this is the
+    GIN scan. The <code>Bitmap Heap Scan</code> line above it is the heap
+    phase.</p>
+<hr />
+<h2 id="gin-vs-pg_trgm-when-to-use-each">5. GIN vs pg_trgm — When to Use
+    Each</h2>
+<p>A common alternative to full-text search is <code>pg_trgm</code> —
+    PostgreSQL’s trigram extension. It is worth understanding when each is
+    appropriate.</p>
+<h3 id="how-trigrams-work">How trigrams work</h3>
+<p>A trigram extension breaks every string into all possible 3-character
+    substrings (trigrams). For “hello”:</p>
+<pre><code>&quot; h&quot;, &quot; he&quot;, &quot;hel&quot;, &quot;ell&quot;, &quot;llo&quot;, &quot;lo &quot;</code></pre>
+<p>(spaces are added at the boundaries to handle short strings and
+    beginnings/endings)</p>
+<p>A GIN or GiST index on a trigram-indexed column can answer
+    <code>LIKE '%term%'</code> queries because any string containing “term”
+    must contain the trigrams ” te”, “ter”, “erm”, “rm” — and those can be
+    looked up in the index.</p>
+<h3 id="comparison-table">Comparison table</h3>
+<table>
+    <colgroup>
+        <col style="width: 33%" />
+        <col style="width: 33%" />
+        <col style="width: 33%" />
+    </colgroup>
+    <thead>
+    <tr>
+        <th>Dimension</th>
+        <th>Full-text (tsvector + GIN)</th>
+        <th>pg_trgm (LIKE with GIN)</th>
+    </tr>
+    </thead>
+    <tbody>
+    <tr>
+        <td>What it indexes</td>
+        <td>Language-aware lexemes</td>
+        <td>Raw character n-grams</td>
+    </tr>
+    <tr>
+        <td>Language awareness</td>
+        <td>Yes — stemming, stop words</td>
+        <td>No — purely character-based</td>
+    </tr>
+    <tr>
+        <td>Query type</td>
+        <td><code>@@</code> operator with tsquery</td>
+        <td><code>LIKE</code>, <code>ILIKE</code>, <code>~</code> (regex)</td>
+    </tr>
+    <tr>
+        <td>Handles “scale” finding “scaling”</td>
+        <td>Yes (stemming)</td>
+        <td>No (“scal” != “scali”)</td>
+    </tr>
+    <tr>
+        <td>Handles typos/fuzzy matching</td>
+        <td>No</td>
+        <td>Yes (similarity threshold)</td>
+    </tr>
+    <tr>
+        <td>Index size</td>
+        <td>Moderate</td>
+        <td>Larger (more trigrams than lexemes)</td>
+    </tr>
+    <tr>
+        <td>Insert overhead</td>
+        <td>Low (pending list batching)</td>
+        <td>Moderate</td>
+    </tr>
+    <tr>
+        <td>Multi-language</td>
+        <td>Yes (per-column language setting)</td>
+        <td>Language agnostic</td>
+    </tr>
+    <tr>
+        <td>Setup</td>
+        <td>Built-in</td>
+        <td><code>CREATE EXTENSION pg_trgm;</code></td>
+    </tr>
+    </tbody>
+</table>
+<p><strong>Use full-text search (tsvector + GIN) when:</strong> - Your
+    content is natural language prose (articles, posts, comments) - You want
+    users to search conceptually (“scale” finds “scaling”) - You have a
+    single dominant language per field - Stop word elimination is desirable
+    (filtering out “the”, “is”, “are”)</p>
+<p><strong>Use pg_trgm when:</strong> - You need fuzzy matching / typo
+    tolerance (similarity search) - Your content is not natural language
+    (product codes, usernames, URLs) - You need <code>LIKE '%term%'</code>
+    behaviour without semantic stemming - You need to search across multiple
+    languages in the same column</p>
+<p>For the blog CMS with English prose content, full-text search is the
+    right choice.</p>
+<hr />
+<h2 id="generated-columns-stored-vs-virtual">6. Generated Columns —
+    <code>STORED</code> vs Virtual</h2>
+<h3 id="what-is-a-generated-column">What is a generated column?</h3>
+<p>A generated column is a column whose value is computed from an
+    expression over other columns in the same row. The database maintains it
+    automatically — you never write to it directly.</p>
+<div class="sourceCode" id="cb15"><pre
+        class="sourceCode sql"><code class="sourceCode sql"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="kw">ALTER</span> <span class="kw">TABLE</span> posts</span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">ADD</span> <span class="kw">COLUMN</span> search_vector tsvector</span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a>        <span class="kw">GENERATED</span> ALWAYS <span class="kw">AS</span> (</span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a>            to_tsvector(<span class="st">&#39;english&#39;</span>,</span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a>                <span class="fu">coalesce</span>(title, <span class="st">&#39;&#39;</span>) <span class="op">||</span> <span class="st">&#39; &#39;</span> <span class="op">||</span> <span class="fu">coalesce</span>(content, <span class="st">&#39;&#39;</span>))</span>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a>        ) STORED;</span></code></pre></div>
+<h3 id="stored-vs-virtual-computed-on-read"><code>STORED</code> vs
+    virtual (computed on read)</h3>
+<p>PostgreSQL 12 supports only <code>STORED</code> generated columns.
+    The value is computed on every <code>INSERT</code> and
+    <code>UPDATE</code> and saved to disk alongside the other columns.
+    Reading the column costs nothing — it is already there.</p>
+<p>Other databases (SQLite, MySQL 5.7+, SQL Server) also support
+    <strong>virtual</strong> (or computed-on-read) generated columns that
+    are not stored and are recomputed each time they are selected.
+    PostgreSQL does not currently support virtual generated columns (as of
+    version 17).</p>
+<p>The trade-off: - <code>STORED</code>: write overhead (recompute on
+    change) + disk space; but free to read and can be indexed - Virtual: no
+    write overhead, no disk space; but cannot be indexed (there is nothing
+    to index until read time)</p>
+<p>Since we need the GIN index on <code>search_vector</code>,
+    <code>STORED</code> is the only option anyway.</p>
+<h3 id="why-generated-columns-beat-triggers">Why generated columns beat
+    triggers</h3>
+<p>Before generated columns (PostgreSQL 12), the standard approach was a
+    <code>BEFORE INSERT OR UPDATE</code> trigger that called
+    <code>to_tsvector()</code> and set the <code>search_vector</code>
+    column. This works, but generated columns have clear advantages:</p>
+<p><strong>Discoverability</strong>: <code>\d posts</code> shows the
+    generated column expression. A trigger is invisible unless you query
+    <code>pg_trigger</code> or check the trigger function definition.</p>
+<p><strong>Correctness guarantee</strong>: A generated column cannot be
+    bypassed. <code>INSERT INTO posts (...) VALUES (...)</code> will always
+    compute <code>search_vector</code> correctly. A trigger can be disabled
+    with <code>ALTER TABLE posts DISABLE TRIGGER ...</code> — intentionally
+    or accidentally.</p>
+<p><strong>Simplicity</strong>: No trigger function to write, test, or
+    maintain. The expression lives directly in the column definition.</p>
+<p><strong>Performance</strong>: The same — both approaches call
+    <code>to_tsvector()</code> during the write. But triggers require a
+    separate function call overhead.</p>
+<hr />
+<h2 id="the-two-step-repository-pattern">7. The Two-Step Repository
+    Pattern</h2>
+<p>This is the most non-obvious part of commit 33. Understanding why two
+    separate queries are needed requires understanding the limits of
+    <code>@EntityGraph</code> and native queries.</p>
+<h3 id="why-not-use-entitygraph-with-a-native-query">Why not use
+    <code>@EntityGraph</code> with a native query?</h3>
+<p><code>@EntityGraph</code> works by instructing JPA to add
+    <code>LEFT JOIN FETCH</code> clauses to the generated JPQL query. It is
+    a post-processing step on JPQL — Spring Data reads the
+    <code>@EntityGraph</code>, determines which relationships to eagerly
+    fetch, and generates:</p>
+<div class="sourceCode" id="cb16"><pre
+        class="sourceCode sql"><code class="sourceCode sql"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> p, u, c, t</span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a><span class="kw">FROM</span> Post p</span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a><span class="kw">LEFT</span> <span class="kw">JOIN</span> FETCH p.<span class="fu">user</span> u</span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a><span class="kw">LEFT</span> <span class="kw">JOIN</span> FETCH p.<span class="kw">category</span> c</span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a><span class="kw">LEFT</span> <span class="kw">JOIN</span> FETCH p.tags t</span>
+<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a><span class="kw">WHERE</span> <span class="op">&lt;</span>your condition<span class="op">&gt;</span></span></code></pre></div>
+<p>For native queries (<code>nativeQuery = true</code>), there is no JPA
+    query generation. The SQL you provide is sent directly to PostgreSQL
+    unchanged. <code>@EntityGraph</code> has no way to inject
+    <code>LEFT JOIN FETCH</code> into raw SQL, so it is silently ignored on
+    native queries.</p>
+<p><strong>Proof</strong>: the Spring Data JPA documentation states:
+    “Entity graphs with native queries are not supported.”</p>
+<h3 id="why-not-write-a-single-native-sql-join">Why not write a single
+    native SQL JOIN?</h3>
+<p>You could write:</p>
+<div class="sourceCode" id="cb17"><pre
+        class="sourceCode sql"><code class="sourceCode sql"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> p.<span class="op">*</span>, u.<span class="kw">id</span>, u.name, c.<span class="kw">id</span>, c.name, t.<span class="kw">id</span>, t.name</span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a><span class="kw">FROM</span> posts p</span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a><span class="kw">JOIN</span> users u <span class="kw">ON</span> p.user_id <span class="op">=</span> u.<span class="kw">id</span></span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a><span class="kw">LEFT</span> <span class="kw">JOIN</span> categories c <span class="kw">ON</span> p.category_id <span class="op">=</span> c.<span class="kw">id</span></span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a><span class="kw">LEFT</span> <span class="kw">JOIN</span> post_tags pt <span class="kw">ON</span> p.<span class="kw">id</span> <span class="op">=</span> pt.post_id</span>
+<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a><span class="kw">LEFT</span> <span class="kw">JOIN</span> tags t <span class="kw">ON</span> pt.tag_id <span class="op">=</span> t.<span class="kw">id</span></span>
+<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a><span class="kw">WHERE</span> p.search_vector @@ plainto_tsquery(<span class="st">&#39;english&#39;</span>, <span class="ch">:query</span>)</span></code></pre></div>
+<p>This produces a Cartesian product on <code>post_tags</code>. A post
+    with 3 tags returns 3 rows, all with identical post and user and
+    category data. You would need to:</p>
+<ol type="1">
+    <li>Write a custom <code>@SqlResultSetMapping</code> (many lines of
+        XML-like annotations) to tell JPA how to deserialise this flat result
+        into nested <code>Post</code> objects with
+        <code>Set&lt;Tag&gt; tags</code></li>
+    <li>Or do the deduplication manually in Java</li>
+</ol>
+<p>Neither is simple. The two-step pattern is much cleaner.</p>
+<h3 id="how-the-two-step-pattern-works">How the two-step pattern
+    works</h3>
+<pre><code>Step 1: Native query → Page&lt;Long&gt;
+    SQL: SELECT p.id FROM posts p
+         WHERE p.search_vector @@ plainto_tsquery(&#39;english&#39;, :query)
+         ORDER BY p.published_at DESC
+         LIMIT :size OFFSET :page*size
+
+    Input:  query string, pageable
+    Output: Page&lt;Long&gt; — list of IDs for this page + total count
+
+Step 2: JPQL with @EntityGraph → List&lt;Post&gt;
+    JPQL: SELECT p FROM Post p WHERE p.id IN :ids
+    +EntityGraph({&quot;user&quot;, &quot;category&quot;, &quot;tags&quot;})
+
+    Hibernate generates:
+    SELECT p.*, u.*, c.*, t.*
+    FROM posts p
+    LEFT JOIN FETCH users u ON p.user_id = u.id
+    LEFT JOIN FETCH categories c ON p.category_id = c.id
+    LEFT JOIN FETCH post_tags pt ON p.id = pt.post_id
+    LEFT JOIN FETCH tags t ON pt.tag_id = t.id
+    WHERE p.id IN (4, 7, 19, 31)
+
+    Input:  list of IDs from Step 1
+    Output: List&lt;Post&gt; with all associations loaded
+
+Re-order: IN clause does not guarantee order → restore Step 1 order
+    idPage.getContent() is ordered by published_at DESC
+    Convert List&lt;Post&gt; to Map&lt;Long, Post&gt; for O(1) lookup
+    Stream over the ordered ID list, map each ID to its Post</code></pre>
+<p>Total SQL queries for a search request: <strong>exactly 2</strong>
+    (plus the count query for pagination metadata, totaling 3 — the same as
+    any paginated endpoint).</p>
+<h3 id="why-the-count-query-is-separate">Why the count query is
+    separate</h3>
+<p>Spring Data JPA needs <code>totalElements</code> to populate the
+    <code>Page</code> metadata (total pages, is this the last page?, etc.).
+    For JPQL queries that return <code>Page&lt;Post&gt;</code>, Spring Data
+    derives the count query automatically by rewriting the SELECT to
+    <code>SELECT COUNT(p)</code>. For native queries, it cannot do this
+    reliably (the SQL could have DISTINCT, subqueries, GROUP BY, etc.), so
+    you must supply the count query explicitly:</p>
+<div class="sourceCode" id="cb19"><pre
+        class="sourceCode java"><code class="sourceCode java"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="at">@Query</span><span class="op">(</span></span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a>    value <span class="op">=</span> <span class="st">&quot;SELECT p.id FROM posts p WHERE ... ORDER BY ...&quot;</span><span class="op">,</span></span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a>    countQuery <span class="op">=</span> <span class="st">&quot;SELECT COUNT(p.id) FROM posts p WHERE ...&quot;</span><span class="op">,</span></span>
+<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a>    nativeQuery <span class="op">=</span> <span class="kw">true</span></span>
+<span id="cb19-5"><a href="#cb19-5" aria-hidden="true" tabindex="-1"></a><span class="op">)</span></span>
+<span id="cb19-6"><a href="#cb19-6" aria-hidden="true" tabindex="-1"></a>Page<span class="op">&lt;</span><span class="bu">Long</span><span class="op">&gt;</span> <span class="fu">findPublishedPostIdsByFullTextSearch</span><span class="op">(</span><span class="kw">...</span><span class="op">);</span></span></code></pre></div>
+<p>Note: the <code>ORDER BY</code> belongs only in the data query. Many
+    databases (including PostgreSQL) will reject <code>ORDER BY</code> in a
+    subquery without <code>LIMIT</code>, and the count query does not need
+    ordering.</p>
+<h3 id="re-applying-sort-order-after-step-2">Re-applying sort order
+    after Step 2</h3>
+<p>The JPQL query in Step 2 uses <code>WHERE p.id IN :ids</code>. The
+    SQL <code>IN</code> operator returns rows in any order — usually heap
+    order (physical storage order), not the order of the ID list. If Step 1
+    returned IDs <code>[7, 4, 19]</code> (ordered by
+    <code>published_at DESC</code>), Step 2 might return posts in the order
+    <code>[4, 7, 19]</code>.</p>
+<p>The service re-applies the Step 1 order:</p>
+<div class="sourceCode" id="cb20"><pre
+        class="sourceCode java"><code class="sourceCode java"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="bu">Map</span><span class="op">&lt;</span><span class="bu">Long</span><span class="op">,</span> Post<span class="op">&gt;</span> byId <span class="op">=</span> posts<span class="op">.</span><span class="fu">stream</span><span class="op">()</span></span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span><span class="fu">collect</span><span class="op">(</span>Collectors<span class="op">.</span><span class="fu">toMap</span><span class="op">(</span>Post<span class="op">::</span>getId<span class="op">,</span> p <span class="op">-&gt;</span> p<span class="op">));</span></span>
+<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a><span class="bu">List</span><span class="op">&lt;</span>PostResponse<span class="op">&gt;</span> ordered <span class="op">=</span> idPage<span class="op">.</span><span class="fu">getContent</span><span class="op">().</span><span class="fu">stream</span><span class="op">()</span></span>
+<span id="cb20-4"><a href="#cb20-4" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span><span class="fu">map</span><span class="op">(</span>byId<span class="op">::</span>get<span class="op">)</span>       <span class="co">// look up each ID in the map</span></span>
+<span id="cb20-5"><a href="#cb20-5" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span><span class="fu">filter</span><span class="op">(</span>Objects<span class="op">::</span>nonNull<span class="op">)</span></span>
+<span id="cb20-6"><a href="#cb20-6" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span><span class="fu">map</span><span class="op">(</span>postMapper<span class="op">::</span>toResponse<span class="op">)</span></span>
+<span id="cb20-7"><a href="#cb20-7" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span><span class="fu">collect</span><span class="op">(</span>Collectors<span class="op">.</span><span class="fu">toList</span><span class="op">());</span></span></code></pre></div>
+<p><code>idPage.getContent()</code> is already in
+    <code>published_at DESC</code> order because that order came from the
+    native query’s <code>ORDER BY</code> clause. Streaming over the IDs and
+    looking up each post in the map reconstructs the original order.</p>
+<p>The <code>filter(Objects::nonNull)</code> handles the race condition
+    where a post is soft-deleted between Step 1 and Step 2. In practice this
+    is extremely unlikely but the code is defensive.</p>
+<hr />
+<h2 id="write-overhead-and-vacuum">8. Write Overhead and VACUUM</h2>
+<h3 id="what-happens-on-insertupdate">What happens on INSERT/UPDATE</h3>
+<p>When you INSERT a new post or UPDATE <code>title</code> or
+    <code>content</code>:</p>
+<ol type="1">
+    <li>PostgreSQL computes the new <code>search_vector</code> value (a
+        <code>to_tsvector()</code> call)</li>
+    <li>The tsvector is written to the heap row alongside the other
+        columns</li>
+    <li>The GIN index is not updated immediately — new entries go into the
+        <strong>GIN pending list</strong>, a temporary buffer in the index
+        pages</li>
+</ol>
+<h3 id="the-gin-pending-list">The GIN pending list</h3>
+<p>The pending list is a small area at the beginning of the GIN index
+    file (not in memory). New entries accumulate there until either: - The
+    pending list reaches <code>gin_pending_list_limit</code> (default 4MB) -
+    An autovacuum runs on the table and calls <code>ginvacuumcleanup</code>
+    - A read query searches the index: PostgreSQL checks the pending list
+    first, then the main index structure, and may flush the pending list if
+    it is large</p>
+<p>When the pending list is flushed, entries are merged into the main
+    inverted index structure. This merge can briefly lock the index for
+    writes.</p>
+<h3 id="performance-implications">Performance implications</h3>
+<table>
+    <colgroup>
+        <col style="width: 33%" />
+        <col style="width: 33%" />
+        <col style="width: 33%" />
+    </colgroup>
+    <thead>
+    <tr>
+        <th>Operation</th>
+        <th>With GIN index</th>
+        <th>Without GIN index</th>
+    </tr>
+    </thead>
+    <tbody>
+    <tr>
+        <td>INSERT (new post)</td>
+        <td>Append lexemes to pending list</td>
+        <td>No index overhead</td>
+    </tr>
+    <tr>
+        <td>UPDATE title/content</td>
+        <td>Recompute tsvector, mark old entries for deletion, append new
+            lexemes</td>
+        <td>No index overhead</td>
+    </tr>
+    <tr>
+        <td>SELECT (search)</td>
+        <td>Check pending list + B-tree lookup + posting list fetch</td>
+        <td>Sequential scan</td>
+    </tr>
+    <tr>
+        <td>VACUUM/autovacuum</td>
+        <td>Flush pending list to main index</td>
+        <td>Normal vacuuming</td>
+    </tr>
+    </tbody>
+</table>
+<p>For a blog CMS with O(writes per day) &lt;&lt; O(reads per day), the
+    write overhead is negligible. The index pays for itself on the very
+    first search query.</p>
+<h3 id="tuning-gin_pending_list_limit">Tuning
+    <code>gin_pending_list_limit</code></h3>
+<p>If your workload has many concurrent writes (e.g., a bulk import),
+    the pending list can fill up frequently, causing write spikes as it
+    flushes. You can increase the limit per-index:</p>
+<div class="sourceCode" id="cb21"><pre
+        class="sourceCode sql"><code class="sourceCode sql"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="kw">ALTER</span> <span class="kw">INDEX</span> idx_posts_search_vector <span class="kw">SET</span> (gin_pending_list_limit <span class="op">=</span> <span class="dv">16384</span>);  <span class="co">-- 16MB</span></span></code></pre></div>
+<p>Or globally in <code>postgresql.conf</code>:</p>
+<pre><code>gin_pending_list_limit = 16MB</code></pre>
+<p>Higher limits mean fewer flushes (better write throughput) but longer
+    pending-list scan times during reads. The default 4MB is appropriate for
+    most workloads.</p>
+<hr />
+<h2 id="trade-off-summary-table">9. Trade-off Summary Table</h2>
+<table>
+    <colgroup>
+        <col style="width: 33%" />
+        <col style="width: 33%" />
+        <col style="width: 33%" />
+    </colgroup>
+    <thead>
+    <tr>
+        <th>Dimension</th>
+        <th><code>LIKE '%term%'</code></th>
+        <th>Full-text (tsvector + GIN)</th>
+    </tr>
+    </thead>
+    <tbody>
+    <tr>
+        <td><strong>Query performance</strong></td>
+        <td>O(N) sequential scan</td>
+        <td>O(log V + k) index lookup</td>
+    </tr>
+    <tr>
+        <td><strong>Execution time (6K posts)</strong></td>
+        <td>~54ms</td>
+        <td>~0.1ms (~457x faster)</td>
+    </tr>
+    <tr>
+        <td><strong>Language awareness</strong></td>
+        <td>None (character-by-character)</td>
+        <td>Yes (stemming, stop words)</td>
+    </tr>
+    <tr>
+        <td><strong>Stemming</strong></td>
+        <td>No</td>
+        <td>Yes (“scale” finds “scaling”)</td>
+    </tr>
+    <tr>
+        <td><strong>Case sensitivity</strong></td>
+        <td>Requires <code>LOWER()</code> everywhere</td>
+        <td>Handled automatically</td>
+    </tr>
+    <tr>
+        <td><strong>Schema complexity</strong></td>
+        <td>Minimal (no extra column)</td>
+        <td>+1 column, +1 index</td>
+    </tr>
+    <tr>
+        <td><strong>Disk overhead</strong></td>
+        <td>None</td>
+        <td>~15–25MB per 10K posts</td>
+    </tr>
+    <tr>
+        <td><strong>Write overhead</strong></td>
+        <td>Minimal</td>
+        <td>Low (pending list amortises writes)</td>
+    </tr>
+    <tr>
+        <td><strong>Query syntax</strong></td>
+        <td>Standard JPQL/SQL</td>
+        <td>Native SQL (<code>@@</code> operator)</td>
+    </tr>
+    <tr>
+        <td><strong>JPA integration</strong></td>
+        <td>Works with JPQL + <span class="citation"
+                                    data-cites="EntityGraph">@EntityGraph</span></td>
+        <td>Requires native query + two-step pattern</td>
+    </tr>
+    <tr>
+        <td><strong>Multi-word queries</strong></td>
+        <td>OR or AND manually written</td>
+        <td>Implicit AND via plainto_tsquery</td>
+    </tr>
+    <tr>
+        <td><strong>Scalability</strong></td>
+        <td>Degrades linearly with N</td>
+        <td>Stable O(log V + k)</td>
+    </tr>
+    <tr>
+        <td><strong>Maintenance</strong></td>
+        <td>None</td>
+        <td>Autovacuum flushes GIN pending list</td>
+    </tr>
+    </tbody>
+</table>
+<hr />
+<h2 id="next-steps-relevance-ranking-and-fuzzy-search">10. Next Steps:
+    Relevance Ranking and Fuzzy Search</h2>
+<h3 id="ts_rank-relevance-ordered-results">ts_rank — relevance-ordered
+    results</h3>
+<p>The current implementation orders results by
+    <code>published_at DESC</code> — most recently published first. A better
+    search experience orders by relevance: posts that match the query most
+    closely should appear first.</p>
+<p>PostgreSQL provides <code>ts_rank(tsvector, tsquery)</code> — a
+    function that scores how well a tsvector matches a tsquery, based on
+    term frequency, document length, and optionally position proximity:</p>
+<div class="sourceCode" id="cb23"><pre
+        class="sourceCode sql"><code class="sourceCode sql"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> <span class="kw">id</span>, title,</span>
+<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a>       ts_rank(search_vector, plainto_tsquery(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;spring boot&#39;</span>)) <span class="kw">AS</span> <span class="fu">rank</span></span>
+<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a><span class="kw">FROM</span> posts</span>
+<span id="cb23-4"><a href="#cb23-4" aria-hidden="true" tabindex="-1"></a><span class="kw">WHERE</span> search_vector @@ plainto_tsquery(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;spring boot&#39;</span>)</span>
+<span id="cb23-5"><a href="#cb23-5" aria-hidden="true" tabindex="-1"></a><span class="kw">ORDER</span> <span class="kw">BY</span> <span class="fu">rank</span> <span class="kw">DESC</span>;</span></code></pre></div>
+<p>A higher rank means the document is a better match. For this project,
+    you could add <code>ts_rank</code> to the native query and order by
+    it:</p>
+<div class="sourceCode" id="cb24"><pre
+        class="sourceCode sql"><code class="sourceCode sql"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> p.<span class="kw">id</span></span>
+<span id="cb24-2"><a href="#cb24-2" aria-hidden="true" tabindex="-1"></a><span class="kw">FROM</span> posts p</span>
+<span id="cb24-3"><a href="#cb24-3" aria-hidden="true" tabindex="-1"></a><span class="kw">WHERE</span> p.is_deleted <span class="op">=</span> <span class="kw">false</span></span>
+<span id="cb24-4"><a href="#cb24-4" aria-hidden="true" tabindex="-1"></a>  <span class="kw">AND</span> p.status <span class="op">=</span> <span class="st">&#39;PUBLISHED&#39;</span></span>
+<span id="cb24-5"><a href="#cb24-5" aria-hidden="true" tabindex="-1"></a>  <span class="kw">AND</span> p.search_vector @@ plainto_tsquery(<span class="st">&#39;english&#39;</span>, <span class="ch">:query</span>)</span>
+<span id="cb24-6"><a href="#cb24-6" aria-hidden="true" tabindex="-1"></a><span class="kw">ORDER</span> <span class="kw">BY</span> ts_rank(p.search_vector, plainto_tsquery(<span class="st">&#39;english&#39;</span>, <span class="ch">:query</span>)) <span class="kw">DESC</span></span></code></pre></div>
+<p>Note: <code>ts_rank</code> is not indexable — it must be computed for
+    every matching row. For queries that match many rows (e.g., a single
+    common word matching 5,000 posts), this computation can be slow. Limit
+    the result set before computing rank, or use <code>ts_rank_cd</code>
+    (cover density ranking, faster for very common terms).</p>
+<h3 id="pg_trgm-fuzzy-search-for-typo-tolerance">pg_trgm — fuzzy search
+    for typo tolerance</h3>
+<p>If you want to find “Spring Boot” even when a user types “Sprng
+    Boot”, full-text search won’t help (it would look for the lexeme “sprng”
+    which doesn’t exist). Trigram similarity handles this:</p>
+<div class="sourceCode" id="cb25"><pre
+        class="sourceCode sql"><code class="sourceCode sql"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> EXTENSION <span class="cf">IF</span> <span class="kw">NOT</span> <span class="kw">EXISTS</span> pg_trgm;</span>
+<span id="cb25-2"><a href="#cb25-2" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> <span class="kw">INDEX</span> idx_posts_title_trgm <span class="kw">ON</span> posts <span class="kw">USING</span> GIN (title gin_trgm_ops);</span>
+<span id="cb25-3"><a href="#cb25-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-4"><a href="#cb25-4" aria-hidden="true" tabindex="-1"></a><span class="co">-- Find posts with a title similar to &#39;Sprng Boot&#39;</span></span>
+<span id="cb25-5"><a href="#cb25-5" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> title, similarity(title, <span class="st">&#39;Sprng Boot&#39;</span>) <span class="kw">AS</span> sim</span>
+<span id="cb25-6"><a href="#cb25-6" aria-hidden="true" tabindex="-1"></a><span class="kw">FROM</span> posts</span>
+<span id="cb25-7"><a href="#cb25-7" aria-hidden="true" tabindex="-1"></a><span class="kw">WHERE</span> title % <span class="st">&#39;Sprng Boot&#39;</span>  <span class="co">-- % is the similarity threshold operator</span></span>
+<span id="cb25-8"><a href="#cb25-8" aria-hidden="true" tabindex="-1"></a><span class="kw">ORDER</span> <span class="kw">BY</span> sim <span class="kw">DESC</span></span>
+<span id="cb25-9"><a href="#cb25-9" aria-hidden="true" tabindex="-1"></a><span class="kw">LIMIT</span> <span class="dv">10</span>;</span></code></pre></div>
+<p>The <code>%</code> operator returns true when
+    <code>similarity(a, b) &gt; pg_trgm.similarity_threshold</code> (default
+    0.3). You can combine both approaches: use full-text search for the main
+    search and add a fallback trigram search when full-text returns zero
+    results.</p>
+<h3 id="combining-full-text-search-with-ts_headline">Combining full-text
+    search with ts_headline</h3>
+<p><code>ts_headline()</code> generates a snippet from the original
+    document showing which parts matched the query, with match terms
+    highlighted:</p>
+<div class="sourceCode" id="cb26"><pre
+        class="sourceCode sql"><code class="sourceCode sql"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> title,</span>
+<span id="cb26-2"><a href="#cb26-2" aria-hidden="true" tabindex="-1"></a>       ts_headline(<span class="st">&#39;english&#39;</span>, content,</span>
+<span id="cb26-3"><a href="#cb26-3" aria-hidden="true" tabindex="-1"></a>                   plainto_tsquery(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;spring boot&#39;</span>),</span>
+<span id="cb26-4"><a href="#cb26-4" aria-hidden="true" tabindex="-1"></a>                   <span class="st">&#39;MaxWords=30, MinWords=15, StartSel=&lt;b&gt;, StopSel=&lt;/b&gt;&#39;</span>) <span class="kw">AS</span> snippet</span>
+<span id="cb26-5"><a href="#cb26-5" aria-hidden="true" tabindex="-1"></a><span class="kw">FROM</span> posts</span>
+<span id="cb26-6"><a href="#cb26-6" aria-hidden="true" tabindex="-1"></a><span class="kw">WHERE</span> search_vector @@ plainto_tsquery(<span class="st">&#39;english&#39;</span>, <span class="st">&#39;spring boot&#39;</span>);</span></code></pre></div>
+<p>Output:</p>
+<pre><code>&quot;Introduction to Spring Boot&quot; | &quot;...a brief overview of &lt;b&gt;Spring&lt;/b&gt; &lt;b&gt;Boot&lt;/b&gt; architecture and how it simplifies...&quot;</code></pre>
+<p><code>ts_headline</code> is expensive (it re-parses the original
+    text) and should be used only in the final presentation layer, not the
+    search query itself.</p>
