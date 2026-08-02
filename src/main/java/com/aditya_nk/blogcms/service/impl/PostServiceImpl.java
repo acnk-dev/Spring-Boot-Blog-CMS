@@ -3,6 +3,7 @@ package com.aditya_nk.blogcms.service.impl;
 import com.aditya_nk.blogcms.dto.request.CreatePostRequest;
 import com.aditya_nk.blogcms.dto.request.UpdatePostRequest;
 import com.aditya_nk.blogcms.dto.response.PostResponse;
+import com.aditya_nk.blogcms.dto.response.RestPage;
 import com.aditya_nk.blogcms.entity.Category;
 import com.aditya_nk.blogcms.entity.Post;
 import com.aditya_nk.blogcms.entity.Tag;
@@ -214,7 +215,7 @@ public class PostServiceImpl implements PostService {
 
     @Override
     @Cacheable(value = "posts", key = "'all_' + #page + '_' + #size + '_' + #sortBy + '_' + #sortDir", condition = "#page == 0")
-    public Page<PostResponse> getAllPosts(int page, int size, String sortBy, String sortDir) {
+    public RestPage<PostResponse> getAllPosts(int page, int size, String sortBy, String sortDir) {
         Sort sort = sortDir.equalsIgnoreCase("asc")
                 ? Sort.by(sortBy).ascending()
                 : Sort.by(sortBy).descending();
@@ -228,8 +229,8 @@ public class PostServiceImpl implements PostService {
                 pageable
         );
 
-        // No N+1 problem - relationships already loaded!
-        return posts.map(postMapper::toResponse);
+        // Wrapped in RestPage so Jackson can deserialize it on cache read-back
+        return new RestPage<>(posts.map(postMapper::toResponse));
     }
 
     @Override
@@ -272,7 +273,7 @@ public class PostServiceImpl implements PostService {
 
     @Override
     @Cacheable(value = "posts", key = "'category_' + #categoryId + '_' + #page + '_' + #size")
-    public Page<PostResponse> getPostsByCategory(Long categoryId, int page, int size) {
+    public RestPage<PostResponse> getPostsByCategory(Long categoryId, int page, int size) {
         // Verify category exists
         if (!categoryRepository.existsById(categoryId)) {
             throw new ResourceNotFoundException("Category", "id", categoryId);
@@ -286,8 +287,8 @@ public class PostServiceImpl implements PostService {
                 pageable
         );
 
-        // No N+1 problem - @EntityGraph eagerly fetches relationships
-        return posts.map(postMapper::toResponse);
+        // Wrapped in RestPage so Jackson can deserialize it on cache read-back
+        return new RestPage<>(posts.map(postMapper::toResponse));
     }
 
     @Override

@@ -3,6 +3,7 @@ package com.aditya_nk.blogcms.service;
 import com.aditya_nk.blogcms.dto.request.CreatePostRequest;
 import com.aditya_nk.blogcms.dto.request.UpdatePostRequest;
 import com.aditya_nk.blogcms.dto.response.PostResponse;
+import com.aditya_nk.blogcms.dto.response.RestPage;
 import org.springframework.data.domain.Page;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -74,7 +75,7 @@ public interface PostService {
      * @param sortDir the sort direction ("asc" or "desc")
      * @return page of post responses
      */
-    Page<PostResponse> getAllPosts(int page, int size, String sortBy, String sortDir);
+    RestPage<PostResponse> getAllPosts(int page, int size, String sortBy, String sortDir);
 
     /**
      * Get posts by a specific user with pagination.
@@ -104,7 +105,7 @@ public interface PostService {
      * @param size the page size
      * @return page of post responses in the category
      */
-    Page<PostResponse> getPostsByCategory(Long categoryId, int page, int size);
+    RestPage<PostResponse> getPostsByCategory(Long categoryId, int page, int size);
 
     /**
      * Get posts by tag.

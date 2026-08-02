@@ -45,7 +45,7 @@ public class CacheWarmingConfig implements ApplicationRunner {
 
     private void warmPostsCache() {
         try {
-            postService.getAllPosts(0, 20, "createdAt", "desc");
+            postService.getAllPosts(0, 20, "publishedAt", "desc");
             log.info("Cache warming: first page of posts loaded (page=0, size=20)");
         } catch (Exception ex) {
             log.warn("Cache warming: failed to pre-load posts — {}", ex.getMessage());
