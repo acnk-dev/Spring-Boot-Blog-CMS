@@ -81,22 +81,42 @@ public interface PostRepository extends JpaRepository<Post, Long> {
     boolean existsBySlug(String slug);
 
     /**
-     * Search posts by title or content.
-     * Uses case-insensitive LIKE search.
-     * Excludes soft-deleted posts.
-     * Only returns published posts.
-     * Uses @EntityGraph to eagerly fetch user, category, and tags in a single query.
+     * Step 1 of full-text search: find matching post IDs using the GIN index.
      *
-     * @param searchTerm the term to search for in title and content
-     * @param pageable pagination information
-     * @return Page of posts matching search criteria
+     * Uses PostgreSQL's @@ operator with plainto_tsquery to match against the
+     * pre-computed search_vector column. Filters for published, non-deleted posts.
+     *
+     * Returns a Page of IDs so that Spring Data can compute total count and
+     * provide pagination metadata without loading any entity data.
+     *
+     * plainto_tsquery('english', :query) converts a plain phrase like
+     * "spring boot" into the tsquery 'spring' & 'boot' automatically.
+     */
+    @Query(
+            value = "SELECT p.id FROM posts p " +
+                    "WHERE p.is_deleted = false " +
+                    "AND p.status = 'PUBLISHED' " +
+                    "AND p.search_vector @@ plainto_tsquery('english', :query) " +
+                    "ORDER BY p.published_at DESC",
+            countQuery = "SELECT COUNT(p.id) FROM posts p " +
+                    "WHERE p.is_deleted = false " +
+                    "AND p.status = 'PUBLISHED' " +
+                    "AND p.search_vector @@ plainto_tsquery('english', :query)",
+            nativeQuery = true
+    )
+    Page<Long> findPublishedPostIdsByFullTextSearch(@Param("query") String query, Pageable pageable);
+
+    /**
+     * Step 2 of full-text search: load full Post entities with associations
+     * for a specific set of IDs found in Step 1.
+     *
+     * Uses @EntityGraph to fetch user, category, and tags in a single
+     * JOIN FETCH query — exactly as all other list-returning methods do.
+     * This prevents N+1 queries when the mapper accesses relationships.
      */
     @EntityGraph(attributePaths = {"user", "category", "tags"})
-    @Query("SELECT p FROM Post p WHERE p.isDeleted = false " +
-            "AND p.status = 'PUBLISHED' " +
-            "AND (LOWER(p.title) LIKE LOWER(CONCAT('%', :searchTerm, '%')) " +
-            "OR LOWER(p.content) LIKE LOWER(CONCAT('%', :searchTerm, '%')))")
-    Page<Post> searchPublishedPosts(@Param("searchTerm") String searchTerm, Pageable pageable);
+    @Query("SELECT p FROM Post p WHERE p.id IN :ids")
+    List<Post> findByIdIn(@Param("ids") List<Long> ids);
 
     /**
      * Find posts by category with status filter and pagination.

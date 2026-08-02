@@ -20,18 +20,13 @@ import com.aditya_nk.blogcms.service.FileStorageService;
 import com.aditya_nk.blogcms.service.PostService;
 import com.aditya_nk.blogcms.util.SlugUtil;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.*;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.time.LocalDateTime;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
 
 /**
@@ -241,12 +236,30 @@ public class PostServiceImpl implements PostService {
 
     @Override
     public Page<PostResponse> searchPosts(String query, int page, int size) {
-        Pageable pageable = PageRequest.of(page, size, Sort.by("publishedAt").descending());
+        Pageable pageable = PageRequest.of(page, size);
 
-        Page<Post> posts = postRepository.searchPublishedPosts(query, pageable);
+        // Step 1: GIN index scan — returns a page of matching IDs with total count metadata
+        Page<Long> idPage = postRepository.findPublishedPostIdsByFullTextSearch(query, pageable);
 
-        // No N+1 problem - @EntityGraph eagerly fetches relationships
-        return posts.map(postMapper::toResponse);
+        if (idPage.isEmpty()) {
+            return Page.empty(pageable);
+        }
+
+        // Step 2: load full entities with associations for this page of IDs
+        // @EntityGraph in repository ensures user, category, tags are fetched
+        // in a single JOIN FETCH — no N+1 problem
+        List<Post> posts = postRepository.findByIdIn(idPage.getContent());
+
+        // Re-apply the Step 1 ordering (IN clause in JPQL does not preserve order)
+        Map<Long, Post> byId = posts.stream()
+                .collect(Collectors.toMap(Post::getId, p -> p));
+        List<PostResponse> ordered = idPage.getContent().stream()
+                .map(byId::get)
+                .filter(Objects::nonNull)
+                .map(postMapper::toResponse)
+                .collect(Collectors.toList());
+
+        return new PageImpl<>(ordered, pageable, idPage.getTotalElements());
     }
 
     @Override
@@ -324,7 +337,6 @@ public class PostServiceImpl implements PostService {
     @Override
     @Transactional
     public PostResponse uploadFeaturedImage(Long postId, MultipartFile file, Long userId) {
-
         // 1. Find post
         Post post = postRepository.findById(postId)
                 .filter(p -> !p.getIsDeleted())
