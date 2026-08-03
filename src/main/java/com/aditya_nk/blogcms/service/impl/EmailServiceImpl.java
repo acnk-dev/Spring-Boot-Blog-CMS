@@ -8,6 +8,8 @@ import com.aditya_nk.blogcms.entity.User;
 import com.aditya_nk.blogcms.service.EmailService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.mail.SimpleMailMessage;
+import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
@@ -16,60 +18,75 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 /**
- * Simulated email service that logs structured output instead of contacting a
- * real SMTP server.  Every public method is annotated {@code @Async} so that
- * the calling thread (e.g. the HTTP request thread in AuthServiceImpl) is
- * never blocked waiting for the simulated 2-second "send" delay.
+ * Real SMTP email service backed by Mailtrap sandbox.
  *
- * <p>All exceptions — including {@link InterruptedException} — are caught and
- * logged rather than re-thrown.  Async {@code void} methods that propagate
- * exceptions cause the exception to be silently swallowed by the framework;
- * explicit catch-and-log is far easier to diagnose in production logs.
+ * <p>Every method is annotated {@code @Async("taskExecutor")} so the HTTP
+ * request thread is never blocked waiting for the SMTP round-trip.  All
+ * exceptions are caught and logged — async {@code void} methods must never
+ * propagate exceptions because there is no caller thread left to receive them.
+ *
+ * <p>Configure Mailtrap credentials via environment variables:
+ * <pre>
+ *   MAILTRAP_USERNAME=&lt;your sandbox username&gt;
+ *   MAILTRAP_PASSWORD=&lt;your sandbox password&gt;
+ * </pre>
  */
 @Service
 @Slf4j
 @RequiredArgsConstructor
 public class EmailServiceImpl implements EmailService {
 
-    // ── helpers ──────────────────────────────────────────────────────────────
+    private static final String FROM_ADDRESS = "noreply@blog-cms.local";
+
+    private final JavaMailSender mailSender;
+
+    // ── private helper ────────────────────────────────────────────────────────
 
     /**
-     * Simulate the latency of an SMTP round-trip and emit a structured log
-     * line that shows exactly what would have been sent.
+     * Build a {@link SimpleMailMessage}, log the intent, send via SMTP, then
+     * log success.  The caller wraps this in a try/catch so any
+     * {@link org.springframework.mail.MailException} is handled consistently.
      */
-    private void simulateSend(EmailRequest request) {
-        log.info("[EMAIL] type={} to={} subject=\"{}\" thread={} timestamp={}",
+    private void doSend(EmailRequest request) {
+        log.info("[EMAIL] Sending type={} to={} subject=\"{}\" thread={}",
                 request.getType(),
                 request.getTo(),
                 request.getSubject(),
-                Thread.currentThread().getName(),
-                LocalDateTime.now());
-        try {
-            Thread.sleep(2000);
-        } catch (InterruptedException e) {
-            // Restore the interrupt flag so calling code can detect it if needed.
-            Thread.currentThread().interrupt();
-            log.error("[EMAIL] Send interrupted: type={} to={}", request.getType(), request.getTo());
-            return;
-        }
+                Thread.currentThread().getName());
+
+        SimpleMailMessage message = new SimpleMailMessage();
+        message.setFrom(FROM_ADDRESS);
+        message.setTo(request.getTo());
+        message.setSubject(request.getSubject());
+        message.setText(request.getBody());
+
+        mailSender.send(message);
+
         log.info("[EMAIL] Sent successfully: type={} to={}", request.getType(), request.getTo());
     }
 
-    // ── EmailService methods ─────────────────────────────────────────────────
+    // ── EmailService methods ──────────────────────────────────────────────────
 
     @Override
     @Async("taskExecutor")
     public void sendWelcomeEmail(User user) {
         try {
+            String body = "Hi " + user.getName() + ",\n\n"
+                    + "Welcome to Blog CMS! Your account has been created successfully.\n\n"
+                    + "You can now log in, explore published posts, and — if you have the AUTHOR role — "
+                    + "start writing your own articles.\n\n"
+                    + "Happy reading!\n"
+                    + "The Blog CMS Team";
+
             EmailRequest request = EmailRequest.builder()
                     .to(user.getEmail())
-                    .subject("Welcome to Blog CMS, " + user.getName() + "!")
-                    .body("Hi " + user.getName() + ",\n\nYour account has been created successfully.")
+                    .subject("Welcome to Blog CMS!")
+                    .body(body)
                     .type(EmailType.WELCOME)
                     .build();
 
             log.info("[EMAIL] Preparing WELCOME email for user id={} name={}", user.getId(), user.getName());
-            simulateSend(request);
+            doSend(request);
         } catch (Exception e) {
             log.error("[EMAIL] Failed to send WELCOME email to {}: {}", user.getEmail(), e.getMessage(), e);
         }
@@ -81,15 +98,23 @@ public class EmailServiceImpl implements EmailService {
         try {
             String resetUrl = "https://blogcms.local/reset-password?token=" + resetToken;
 
+            String body = "Hi " + user.getName() + ",\n\n"
+                    + "We received a request to reset your password.\n\n"
+                    + "Use the link below to choose a new password. "
+                    + "This link expires in 30 minutes.\n\n"
+                    + resetUrl + "\n\n"
+                    + "If you did not request a password reset, you can safely ignore this email.\n\n"
+                    + "The Blog CMS Team";
+
             EmailRequest request = EmailRequest.builder()
                     .to(user.getEmail())
                     .subject("Password Reset Request")
-                    .body("Hi " + user.getName() + ",\n\nClick the link to reset your password:\n" + resetUrl)
+                    .body(body)
                     .type(EmailType.PASSWORD_RESET)
                     .build();
 
             log.info("[EMAIL] Preparing PASSWORD_RESET email for user id={} resetUrl={}", user.getId(), resetUrl);
-            simulateSend(request);
+            doSend(request);
         } catch (Exception e) {
             log.error("[EMAIL] Failed to send PASSWORD_RESET email to {}: {}", user.getEmail(), e.getMessage(), e);
         }
@@ -99,21 +124,26 @@ public class EmailServiceImpl implements EmailService {
     @Async("taskExecutor")
     public void sendCommentNotification(User postAuthor, Comment comment) {
         try {
-            String postTitle = comment.getPost() != null ? comment.getPost().getTitle() : "(unknown post)";
-            String commenterName = comment.getAuthor() != null ? comment.getAuthor().getName() : "Someone";
+            String postTitle    = comment.getPost()   != null ? comment.getPost().getTitle()    : "(unknown post)";
+            String commenterName = comment.getAuthor() != null ? comment.getAuthor().getName()  : "Someone";
+            String preview       = comment.getBody()  != null ? comment.getBody()               : "(no preview available)";
+
+            String body = "Hi " + postAuthor.getName() + ",\n\n"
+                    + commenterName + " left a comment on your post \"" + postTitle + "\":\n\n"
+                    + "\"" + preview + "\"\n\n"
+                    + "Log in to reply or moderate the comment.\n\n"
+                    + "The Blog CMS Team";
 
             EmailRequest request = EmailRequest.builder()
                     .to(postAuthor.getEmail())
                     .subject("New comment on your post: " + postTitle)
-                    .body("Hi " + postAuthor.getName() + ",\n\n"
-                            + commenterName + " commented on \"" + postTitle + "\":\n\n"
-                            + comment.getBody())
+                    .body(body)
                     .type(EmailType.COMMENT_NOTIFICATION)
                     .build();
 
             log.info("[EMAIL] Preparing COMMENT_NOTIFICATION email: postAuthorId={} commentId={}",
                     postAuthor.getId(), comment.getId());
-            simulateSend(request);
+            doSend(request);
         } catch (Exception e) {
             log.error("[EMAIL] Failed to send COMMENT_NOTIFICATION email to {}: {}",
                     postAuthor.getEmail(), e.getMessage(), e);
@@ -124,9 +154,15 @@ public class EmailServiceImpl implements EmailService {
     @Async("taskExecutor")
     public void sendWeeklyDigest(User user, List<Post> popularPosts) {
         try {
-            String postSummary = popularPosts.stream()
+            String postList = popularPosts.stream()
                     .map(p -> "  - " + p.getTitle())
                     .collect(Collectors.joining("\n"));
+
+            String body = "Hi " + user.getName() + ",\n\n"
+                    + "Here are this week's most popular posts on Blog CMS:\n\n"
+                    + postList + "\n\n"
+                    + "Head over to the site to read them in full.\n\n"
+                    + "The Blog CMS Team";
 
             log.info("[EMAIL] Preparing WEEKLY_DIGEST for user id={} postCount={} posts=[{}]",
                     user.getId(),
@@ -136,11 +172,11 @@ public class EmailServiceImpl implements EmailService {
             EmailRequest request = EmailRequest.builder()
                     .to(user.getEmail())
                     .subject("Your Weekly Blog Digest")
-                    .body("Hi " + user.getName() + ",\n\nThis week's popular posts:\n\n" + postSummary)
+                    .body(body)
                     .type(EmailType.WEEKLY_DIGEST)
                     .build();
 
-            simulateSend(request);
+            doSend(request);
         } catch (Exception e) {
             log.error("[EMAIL] Failed to send WEEKLY_DIGEST email to {}: {}", user.getEmail(), e.getMessage(), e);
         }

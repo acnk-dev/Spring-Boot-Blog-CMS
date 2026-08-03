@@ -293,7 +293,7 @@ public class SyncAsyncConfig {
 
 ---
 
-## 7. Why Simulate Before Real SMTP
+## 7. Why Simulate Before Real SMTP (and How the Project Has Now Moved On)
 
 During early development, connecting to a real SMTP server introduces several
 pain points:
@@ -305,16 +305,59 @@ pain points:
 | Accidental sends to real users | Seeded dev data emails go to real addresses |
 | Slow feedback loop | Round-trip to external server adds seconds per test |
 
-The `Thread.sleep(2000)` + structured log approach in `EmailServiceImpl` mirrors
-the *shape* of real async email (latency, failure paths, thread identity) without
-any of the external dependencies.
+The `Thread.sleep(2000)` + structured log approach that was used in the original
+`EmailServiceImpl` mirrors the *shape* of real async email (latency, failure
+paths, thread identity) without any of the external dependencies.  It is still a
+valid starting point when credentials are not yet available.
 
-When the project is ready for production email:
+**As of commit 42, the project has moved to real Mailtrap SMTP.**
+`EmailServiceImpl` now injects `JavaMailSender` and sends actual emails to a
+Mailtrap sandbox inbox.  The simulation code has been removed entirely.
 
-1. Add `spring-boot-starter-mail` to `pom.xml`
-2. Create a `SmtpEmailServiceImpl` that implements `EmailService`
-3. Swap the active implementation with `@Profile("prod")` on the new impl and
-   `@Profile("!prod")` on the stub — no callers change at all.
+### What is Mailtrap?
+
+[Mailtrap](https://mailtrap.io) is an email delivery platform with a free
+**sandbox** inbox — a fake SMTP server that accepts email without forwarding it
+to any real recipient.  Every email your app "sends" lands in your private
+Mailtrap inbox where you can inspect the subject, body, and headers.
+
+This makes it ideal for a teaching project:
+
+- No risk of emailing real users during development
+- No rate limits on the free tier for sandbox sends
+- Full SMTP protocol (so the code path is identical to production)
+- Visible inbox UI to verify email content visually
+
+### How to set up Mailtrap for this project
+
+1. Create a free account at [mailtrap.io](https://mailtrap.io).
+2. In the dashboard, open **Email Testing → Inboxes** and select your default inbox.
+3. Click **SMTP Settings** and choose **Spring Boot** from the integration dropdown.
+   Mailtrap will show you the exact property block — credentials are per-inbox.
+4. Note your **Username** and **Password** (they look like random strings, e.g. `a1b2c3d4e5f6`).
+5. Set the environment variables before starting the app:
+
+   ```bash
+   export MAILTRAP_USERNAME=a1b2c3d4e5f6
+   export MAILTRAP_PASSWORD=7g8h9i0j1k2l
+   ./mvnw spring-boot:run
+   ```
+
+   Or add them to your IDE's run configuration environment variables.
+
+6. Register a new user via `POST /api/v1/auth/register`.
+7. Switch to your Mailtrap inbox — the welcome email should appear within a
+   second or two (it arrives on the `blogcms-async-*` background thread, not
+   the HTTP thread).
+
+### What happens if credentials are not set?
+
+The properties fall back to the placeholder strings `your_mailtrap_username` /
+`your_mailtrap_password`.  The app will start, but the first email attempt will
+throw a `MailAuthenticationException`.  Because every `@Async void` method
+wraps its body in `try/catch`, the exception is logged at ERROR level and the
+HTTP response is unaffected — registration still succeeds, the email just
+does not arrive.
 
 ---
 
