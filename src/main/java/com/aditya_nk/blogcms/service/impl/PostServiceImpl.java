@@ -3,6 +3,7 @@ package com.aditya_nk.blogcms.service.impl;
 import com.aditya_nk.blogcms.dto.request.CreatePostRequest;
 import com.aditya_nk.blogcms.dto.request.UpdatePostRequest;
 import com.aditya_nk.blogcms.dto.response.PostResponse;
+import com.aditya_nk.blogcms.dto.response.RestPage;
 import com.aditya_nk.blogcms.entity.Category;
 import com.aditya_nk.blogcms.entity.Post;
 import com.aditya_nk.blogcms.entity.Tag;
@@ -20,18 +21,15 @@ import com.aditya_nk.blogcms.service.FileStorageService;
 import com.aditya_nk.blogcms.service.PostService;
 import com.aditya_nk.blogcms.util.SlugUtil;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Sort;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
+import org.springframework.data.domain.*;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.time.LocalDateTime;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
 
 /**
@@ -71,6 +69,7 @@ public class PostServiceImpl implements PostService {
 
     @Override
     @Transactional
+    @CacheEvict(value = "posts", allEntries = true)
     public PostResponse createPost(CreatePostRequest request, Long userId) {
         // Find the author
         User author = userRepository.findById(userId)
@@ -115,6 +114,7 @@ public class PostServiceImpl implements PostService {
 
     @Override
     @Transactional
+    @CacheEvict(value = "posts", allEntries = true)
     public PostResponse updatePost(Long postId, UpdatePostRequest request, Long userId) {
         Post post = postRepository.findById(postId)
                 .filter(p -> !p.getIsDeleted())
@@ -178,6 +178,7 @@ public class PostServiceImpl implements PostService {
 
     @Override
     @Transactional
+    @CacheEvict(value = "posts", allEntries = true)
     public void deletePost(Long postId, Long userId) {
         Post post = postRepository.findById(postId)
                 .filter(p -> !p.getIsDeleted())
@@ -194,6 +195,7 @@ public class PostServiceImpl implements PostService {
     }
 
     @Override
+    @Cacheable(value = "posts", key = "#postId")
     public PostResponse getPostById(Long postId) {
         Post post = postRepository.findById(postId)
                 .filter(p -> !p.getIsDeleted())
@@ -203,6 +205,7 @@ public class PostServiceImpl implements PostService {
     }
 
     @Override
+    @Cacheable(value = "posts", key = "#slug")
     public PostResponse getPostBySlug(String slug) {
         Post post = postRepository.findBySlugAndIsDeletedFalse(slug)
                 .orElseThrow(() -> new ResourceNotFoundException("Post", "slug", slug));
@@ -211,7 +214,8 @@ public class PostServiceImpl implements PostService {
     }
 
     @Override
-    public Page<PostResponse> getAllPosts(int page, int size, String sortBy, String sortDir) {
+    @Cacheable(value = "posts", key = "'all_' + #page + '_' + #size + '_' + #sortBy + '_' + #sortDir", condition = "#page == 0")
+    public RestPage<PostResponse> getAllPosts(int page, int size, String sortBy, String sortDir) {
         Sort sort = sortDir.equalsIgnoreCase("asc")
                 ? Sort.by(sortBy).ascending()
                 : Sort.by(sortBy).descending();
@@ -225,8 +229,8 @@ public class PostServiceImpl implements PostService {
                 pageable
         );
 
-        // No N+1 problem - relationships already loaded!
-        return posts.map(postMapper::toResponse);
+        // Wrapped in RestPage so Jackson can deserialize it on cache read-back
+        return new RestPage<>(posts.map(postMapper::toResponse));
     }
 
     @Override
@@ -241,16 +245,35 @@ public class PostServiceImpl implements PostService {
 
     @Override
     public Page<PostResponse> searchPosts(String query, int page, int size) {
-        Pageable pageable = PageRequest.of(page, size, Sort.by("publishedAt").descending());
+        Pageable pageable = PageRequest.of(page, size);
 
-        Page<Post> posts = postRepository.searchPublishedPosts(query, pageable);
+        // Step 1: GIN index scan — returns a page of matching IDs with total count metadata
+        Page<Long> idPage = postRepository.findPublishedPostIdsByFullTextSearch(query, pageable);
 
-        // No N+1 problem - @EntityGraph eagerly fetches relationships
-        return posts.map(postMapper::toResponse);
+        if (idPage.isEmpty()) {
+            return Page.empty(pageable);
+        }
+
+        // Step 2: load full entities with associations for this page of IDs
+        // @EntityGraph in repository ensures user, category, tags are fetched
+        // in a single JOIN FETCH — no N+1 problem
+        List<Post> posts = postRepository.findByIdIn(idPage.getContent());
+
+        // Re-apply the Step 1 ordering (IN clause in JPQL does not preserve order)
+        Map<Long, Post> byId = posts.stream()
+                .collect(Collectors.toMap(Post::getId, p -> p));
+        List<PostResponse> ordered = idPage.getContent().stream()
+                .map(byId::get)
+                .filter(Objects::nonNull)
+                .map(postMapper::toResponse)
+                .collect(Collectors.toList());
+
+        return new PageImpl<>(ordered, pageable, idPage.getTotalElements());
     }
 
     @Override
-    public Page<PostResponse> getPostsByCategory(Long categoryId, int page, int size) {
+    @Cacheable(value = "posts", key = "'category_' + #categoryId + '_' + #page + '_' + #size")
+    public RestPage<PostResponse> getPostsByCategory(Long categoryId, int page, int size) {
         // Verify category exists
         if (!categoryRepository.existsById(categoryId)) {
             throw new ResourceNotFoundException("Category", "id", categoryId);
@@ -264,8 +287,8 @@ public class PostServiceImpl implements PostService {
                 pageable
         );
 
-        // No N+1 problem - @EntityGraph eagerly fetches relationships
-        return posts.map(postMapper::toResponse);
+        // Wrapped in RestPage so Jackson can deserialize it on cache read-back
+        return new RestPage<>(posts.map(postMapper::toResponse));
     }
 
     @Override
@@ -300,6 +323,7 @@ public class PostServiceImpl implements PostService {
 
     @Override
     @Transactional
+    @CacheEvict(value = "posts", allEntries = true)
     public PostResponse publishPost(Long postId, Long userId) {
         Post post = postRepository.findById(postId)
                 .filter(p -> !p.getIsDeleted())
@@ -323,8 +347,8 @@ public class PostServiceImpl implements PostService {
 
     @Override
     @Transactional
+    @CacheEvict(value = "posts", allEntries = true)
     public PostResponse uploadFeaturedImage(Long postId, MultipartFile file, Long userId) {
-
         // 1. Find post
         Post post = postRepository.findById(postId)
                 .filter(p -> !p.getIsDeleted())

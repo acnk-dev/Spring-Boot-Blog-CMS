@@ -118,6 +118,12 @@
 			<artifactId>datafaker</artifactId>
 			<version>2.4.2</version>
 		</dependency>
+
+		<!-- Redis - Spring Data Redis with Lettuce client (default, non-blocking)-->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-data-redis</artifactId>
+		</dependency>
 	</dependencies>
 
 	<build>
