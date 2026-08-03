@@ -289,12 +289,30 @@ Step by step:
 3. From the integration dropdown, select **Spring Boot** — Mailtrap shows the
    exact property block with your credentials pre-filled.
 4. Copy the **Username** and **Password** values.
-5. Set environment variables in your terminal:
+5. Set environment variables — choose one approach:
+
+   **Option A — Terminal (Mac/Linux)**
    ```bash
    export MAILTRAP_USERNAME=<paste username>
    export MAILTRAP_PASSWORD=<paste password>
+   ./mvnw spring-boot:run
    ```
-6. Start the app: `./mvnw spring-boot:run`
+
+   **Option B — IntelliJ IDEA Run Configuration**
+    1. Open **Run → Edit Configurations…** (top-right toolbar dropdown → Edit Configurations)
+    2. Select your `BlogCmsApplication` run configuration (or create one via **+ → Spring Boot**)
+    3. Click the **Environment variables** field → click the **folder icon** on the right
+    4. Click **+** and add two entries:
+       | Name | Value |
+       |---|---|
+       | `MAILTRAP_USERNAME` | your Mailtrap username |
+       | `MAILTRAP_PASSWORD` | your Mailtrap password |
+    5. Click **OK** → **Apply** → **OK**
+    6. Run the app normally with the green ▶ button — IntelliJ injects the variables automatically every time
+
+   > **Tip:** IntelliJ persists these in the run configuration so you only set them once. They are stored in `.idea/workspace.xml` which is gitignored — your credentials never leave your machine.
+
+6. Start the app: `./mvnw spring-boot:run` (or use the IntelliJ ▶ button if you chose Option B)
 7. Register a new user via the Postman collection or curl:
    ```bash
    curl -s -X POST http://localhost:8082/api/v1/auth/register \
