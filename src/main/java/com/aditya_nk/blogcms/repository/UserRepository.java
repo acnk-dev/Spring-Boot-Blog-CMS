@@ -3,10 +3,12 @@ package com.aditya_nk.blogcms.repository;
 import com.aditya_nk.blogcms.entity.User;
 import com.aditya_nk.blogcms.enums.Role;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -124,4 +126,38 @@ public interface UserRepository extends JpaRepository<User, Long> {
             "AND (LOWER(u.name) LIKE LOWER(CONCAT('%', :searchTerm, '%')) " +
             "OR LOWER(u.email) LIKE LOWER(CONCAT('%', :searchTerm, '%')))")
     List<User> searchActiveUsers(@Param("searchTerm") String searchTerm);
+
+    // ── Cleanup / retention queries ──────────────────────────────────────────
+
+    /**
+     * Find soft-deleted users whose updatedAt timestamp is older than the cutoff.
+     * Used by the cleanup scheduler to identify candidates for hard-deletion.
+     *
+     * @param cutoff anything updated before this datetime is eligible
+     * @return list of users past the retention window
+     */
+    List<User> findByIsDeletedTrueAndUpdatedAtBefore(LocalDateTime cutoff);
+
+    /**
+     * Hard-delete users that have been soft-deleted AND are past the retention cutoff.
+     * Uses a JPQL DELETE statement — avoids loading entities into memory.
+     *
+     * @param cutoff datetime threshold; users with updatedAt before this are removed
+     * @return number of rows deleted
+     */
+    @Modifying
+    @Query("DELETE FROM User u WHERE u.isDeleted = true AND u.updatedAt < :cutoff")
+    int hardDeleteByIsDeletedTrueAndUpdatedAtBefore(@Param("cutoff") LocalDateTime cutoff);
+
+    /**
+     * Count users that are currently soft-deleted.
+     * Used by the stats job to report on accumulated soft-deleted records.
+     *
+     * @return count of soft-deleted users
+     */
+    long countByIsDeletedTrue();
+
+    @Modifying
+    @Query("UPDATE User u SET u.updatedAt = :updatedAt WHERE u.id = :id")
+    void backdateUpdatedAt(@Param("id") Long id, @Param("updatedAt") LocalDateTime updatedAt);
 }

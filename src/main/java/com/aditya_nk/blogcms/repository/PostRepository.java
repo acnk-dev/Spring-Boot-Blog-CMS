@@ -11,6 +11,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -247,5 +248,39 @@ public interface PostRepository extends JpaRepository<Post, Long> {
     @Modifying
     @Query("UPDATE Post p SET p.likeCount = CASE WHEN p.likeCount > 0 THEN p.likeCount - 1 ELSE 0 END WHERE p.id = :postId")
     void decrementLikeCount(@Param("postId") Long postId);
+
+    // ── Cleanup / retention queries ──────────────────────────────────────────
+
+    /**
+     * Find soft-deleted posts whose updatedAt timestamp is older than the cutoff.
+     * Used by the cleanup scheduler to identify candidates for hard-deletion.
+     *
+     * @param cutoff anything updated before this datetime is eligible
+     * @return list of posts past the retention window
+     */
+    List<Post> findByIsDeletedTrueAndUpdatedAtBefore(LocalDateTime cutoff);
+
+    /**
+     * Hard-delete posts that have been soft-deleted AND are past the retention cutoff.
+     * Uses a JPQL DELETE statement — avoids loading entities into memory.
+     *
+     * @param cutoff datetime threshold; posts with updatedAt before this are removed
+     * @return number of rows deleted
+     */
+    @Modifying
+    @Query("DELETE FROM Post p WHERE p.isDeleted = true AND p.updatedAt < :cutoff")
+    int hardDeleteByIsDeletedTrueAndUpdatedAtBefore(@Param("cutoff") LocalDateTime cutoff);
+
+    /**
+     * Count posts that are currently soft-deleted.
+     * Used by the stats job to report on accumulated soft-deleted records.
+     *
+     * @return count of soft-deleted posts
+     */
+    long countByIsDeletedTrue();
+
+    @Modifying
+    @Query("UPDATE Post p SET p.updatedAt = :updatedAt WHERE p.id = :id")
+    void backdateUpdatedAt(@Param("id") Long id, @Param("updatedAt") LocalDateTime updatedAt);
 }
 

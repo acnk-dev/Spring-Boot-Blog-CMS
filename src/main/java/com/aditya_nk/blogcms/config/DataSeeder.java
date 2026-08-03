@@ -67,6 +67,7 @@ public class DataSeeder implements ApplicationRunner {
         List<Category> categories = seedCategories();
         List<Tag> tags = seedTags();
         seedPosts(users, categories, tags);
+        seedSoftDeletedData(users, categories, tags);
 
         int totalPosts = (props.getAuthors() + 1) * props.getPostsPerAuthor(); // +1 for admin
         log.info("DataSeeder: done — {} users, {} categories, {} tags, ~{} posts seeded.",
@@ -255,6 +256,92 @@ public class DataSeeder implements ApplicationRunner {
     }
 
     // -------------------------------------------------------------------------
+    // Soft-deleted test data (for testing CleanupService scheduled jobs)
+    // -------------------------------------------------------------------------
+
+    private void seedSoftDeletedData(List<User> activeUsers, List<Category> categories, List<Tag> tags) {
+        if (userRepository.countByIsDeletedTrue() > 0) {
+            log.info("DataSeeder: soft-deleted test data already exists, skipping.");
+            return;
+        }
+
+        String pw = passwordEncoder.encode(SEED_PASSWORD);
+
+        // 3 soft-deleted users — deleted 45 days ago (beyond the 30-day retention window → eligible for purge)
+        List<User> deletedUsers = userRepository.saveAll(List.of(
+                User.builder().email("deleted-author1@blog.com").password(pw)
+                        .name("Deleted Author One").role(Role.AUTHOR)
+                        .emailVerified(true).isDeleted(true)
+                        .bio("This account was soft-deleted 45 days ago.").build(),
+                User.builder().email("deleted-subscriber1@blog.com").password(pw)
+                        .name("Deleted Subscriber One").role(Role.SUBSCRIBER)
+                        .emailVerified(false).isDeleted(true)
+                        .bio("This account was soft-deleted 45 days ago.").build(),
+                User.builder().email("deleted-subscriber2@blog.com").password(pw)
+                        .name("Deleted Subscriber Two").role(Role.SUBSCRIBER)
+                        .emailVerified(true).isDeleted(true)
+                        .bio("This account was soft-deleted 45 days ago.").build()
+        ));
+
+        // Push their updatedAt back 45 days so the cleanup job treats them as purgeable
+        LocalDateTime deletedAt = LocalDateTime.now().minusDays(45);
+        userRepository.flush();
+        deletedUsers.forEach(u -> userRepository.backdateUpdatedAt(u.getId(), deletedAt));
+
+        // 1 soft-deleted user deleted only 10 days ago — inside retention window, must NOT be purged
+        User recentlyDeleted = userRepository.save(
+                User.builder().email("recently-deleted@blog.com").password(pw)
+                        .name("Recently Deleted User").role(Role.SUBSCRIBER)
+                        .emailVerified(true).isDeleted(true)
+                        .bio("Deleted 10 days ago — still within the 30-day retention window.").build()
+        );
+        userRepository.flush();
+        userRepository.backdateUpdatedAt(recentlyDeleted.getId(), LocalDateTime.now().minusDays(10));
+
+        // Soft-deleted posts: 3 old (purgeable) + 1 recent (retain)
+        User author = activeUsers.stream()
+                .filter(u -> u.getRole() == Role.AUTHOR)
+                .findFirst()
+                .orElse(activeUsers.get(0));
+        Category category = categories.get(0);
+        Set<Tag> postTags = new HashSet<>(tags.subList(0, 2));
+
+        List<Post> deletedPosts = postRepository.saveAll(List.of(
+                Post.builder().user(author).category(category).tags(postTags)
+                        .title("Soft-Deleted Post Alpha").slug("soft-deleted-post-alpha")
+                        .content("This post was soft-deleted 60 days ago and is eligible for hard-delete.")
+                        .excerpt("Eligible for cleanup.").status(PostStatus.DRAFT)
+                        .isDeleted(true).viewCount(0).likeCount(0).build(),
+                Post.builder().user(author).category(category).tags(postTags)
+                        .title("Soft-Deleted Post Beta").slug("soft-deleted-post-beta")
+                        .content("This post was soft-deleted 50 days ago and is eligible for hard-delete.")
+                        .excerpt("Eligible for cleanup.").status(PostStatus.DRAFT)
+                        .isDeleted(true).viewCount(0).likeCount(0).build(),
+                Post.builder().user(author).category(category).tags(postTags)
+                        .title("Soft-Deleted Post Gamma").slug("soft-deleted-post-gamma")
+                        .content("This post was soft-deleted 35 days ago and is eligible for hard-delete.")
+                        .excerpt("Eligible for cleanup.").status(PostStatus.DRAFT)
+                        .isDeleted(true).viewCount(0).likeCount(0).build()
+        ));
+        postRepository.flush();
+        deletedPosts.forEach(p -> postRepository.backdateUpdatedAt(p.getId(), LocalDateTime.now().minusDays(35 + random.nextInt(25))));
+
+        Post recentPost = postRepository.save(
+                Post.builder().user(author).category(category).tags(postTags)
+                        .title("Recently Soft-Deleted Post").slug("recently-soft-deleted-post")
+                        .content("Deleted only 5 days ago — must NOT be purged by the cleanup job.")
+                        .excerpt("Within retention window.").status(PostStatus.DRAFT)
+                        .isDeleted(true).viewCount(0).likeCount(0).build()
+        );
+        postRepository.flush();
+        postRepository.backdateUpdatedAt(recentPost.getId(), LocalDateTime.now().minusDays(5));
+
+        log.info("DataSeeder: seeded {} soft-deleted users and {} soft-deleted posts for cleanup job testing.",
+                deletedUsers.size() + 1, deletedPosts.size() + 1);
+        log.info("DataSeeder: cleanup job should purge 3 users + 3 posts (>30 days old); retain 1 user + 1 post (<30 days).");
+    }
+
+    // -------------------------------------------------------------------------
     // Content generation helpers
     // -------------------------------------------------------------------------
 
@@ -311,4 +398,3 @@ public class DataSeeder implements ApplicationRunner {
         return Character.toUpperCase(trimmed.charAt(0)) + trimmed.substring(1);
     }
 }
-
