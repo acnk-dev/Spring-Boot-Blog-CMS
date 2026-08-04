@@ -80,9 +80,9 @@ and audit logging, but the Spring AI code is identical either way.
 1. Go to [Google AI Studio](https://aistudio.google.com/app/apikey)
 2. Sign in with a **personal Google account** (not a GCP workspace account if you can avoid it)
 3. Click **"Create API key"** → **"Create API key in new project"**
-    - ⚠️ Choose **"new project"** — do NOT pick an existing GCP project that has billing enabled.
-      If you use a billing-enabled project, the free tier quota is set to `0` and every call
-      returns `429 RESOURCE_EXHAUSTED`.
+   - ⚠️ Choose **"new project"** — do NOT pick an existing GCP project that has billing enabled.
+     If you use a billing-enabled project, the free tier quota is set to `0` and every call
+     returns `429 RESOURCE_EXHAUSTED`.
 4. Copy the key and store it somewhere safe — you won't see it in full again
 
 ### Free tier limits (as of June 2026)
@@ -554,4 +554,220 @@ The prompts in `CategoryPromptTemplate` were iterated several times. Treat them 
 
 ---
 
-*Next: Part 8 — Building the AI Service (added in Commit #56)*
+*Parts 8–10 below were added in Commit #56.*
+
+---
+
+## Part 8: Building the AI Service
+
+### Service layer architecture
+
+The AI service follows the same layered pattern as every other service in this project:
+
+```
+AIController (commit 59)
+    → AIService (interface)
+        → AIServiceImpl
+            → ChatClient          (Spring AI)
+            → PromptTemplateService  (commit 55)
+            → CategoryRepository  (existing)
+```
+
+`AIService` is an interface so the controller depends on the contract, not the implementation.
+If you later want a mock implementation for tests, or a caching wrapper, you can swap it in
+without touching the controller.
+
+`AIServiceImpl` has three injected dependencies:
+- `ChatClient` — the Spring AI entry point for sending prompts to Gemini
+- `PromptTemplateService` — returns the right system prompt for a given category + task
+- `CategoryRepository` — loads the `Category` entity so we can pass it to `PromptTemplateService`
+
+### The `ChatClient.prompt()` fluent API
+
+Every AI call in this project follows this chain:
+
+```java
+String response = chatClient.prompt()    // 1. start a request builder
+    .system(systemPrompt)                // 2. set the system prompt (who the AI is + task rules)
+    .user(userPrompt)                    // 3. set the user message (the specific input)
+    .call()                              // 4. send synchronously — blocks until Gemini responds
+    .content();                          // 5. extract the text content from the response
+```
+
+Each step in the chain is optional except `.call()` and `.content()`. If you omit `.system()`,
+the model uses no system prompt (fine for simple tasks). If you omit `.user()`, the model has
+nothing to respond to (usually a mistake).
+
+`.call()` is **synchronous** — the calling thread blocks until the response arrives. For blog
+generation this is fine (the user is waiting for AI content). For background jobs, use
+`.stream()` instead.
+
+### System prompt vs user prompt in code
+
+```java
+// System prompt — comes from PromptTemplateService, varies by category
+String systemPrompt = promptTemplateService.getOutlineSystemPrompt(category);
+
+// User prompt — built from the user's request fields
+String userPrompt = buildOutlineUserPrompt(request);
+
+String response = chatClient.prompt()
+    .system(systemPrompt)
+    .user(userPrompt)
+    .call()
+    .content();
+```
+
+`buildOutlineUserPrompt` is a private helper that assembles the user message from the
+request DTO fields:
+
+```java
+private String buildOutlineUserPrompt(GenerateOutlineRequest request) {
+    StringBuilder prompt = new StringBuilder();
+    prompt.append("Create a blog post outline for the topic: ").append(request.getTopic());
+
+    if (request.getTargetAudience() != null && !request.getTargetAudience().isBlank()) {
+        prompt.append("\nTarget audience: ").append(request.getTargetAudience());
+    }
+    if (request.getAdditionalInstructions() != null) {
+        prompt.append("\nAdditional requirements: ").append(request.getAdditionalInstructions());
+    }
+
+    return prompt.toString();
+}
+```
+
+Optional fields are only appended if they are non-null and non-blank. Appending `"Target
+audience: null"` to a prompt is worse than omitting the line entirely — it confuses the model.
+
+---
+
+## Part 9: Outline Generation
+
+### Request and Response DTOs
+
+`GenerateOutlineRequest` carries what the user provides:
+
+```java
+public class GenerateOutlineRequest {
+    @NotBlank  private String topic;         // required — the blog subject
+    @NotNull   private Long categoryId;      // required — determines the AI persona
+               private String targetAudience;        // optional — "beginners", "experts"
+               private String additionalInstructions; // optional — any special requirements
+}
+```
+
+`GenerateOutlineResponse` carries what the service returns:
+
+```java
+public class GenerateOutlineResponse {
+    private String topic;           // echoed back so clients know what was generated
+    private String category;        // the resolved category name
+    private List<String> outline;   // the parsed section headings
+    private String generatedAt;     // ISO timestamp for display/audit
+}
+```
+
+Note that `outline` is `List<String>`, not the raw AI response string. The service parses
+the AI output before returning — the controller never sees raw Gemini text.
+
+### Parsing numbered lists from AI
+
+The system prompt instructs Gemini to return a numbered list like:
+
+```
+1. Introduction to Redis Caching
+2. How the LRU Eviction Algorithm Works
+3. Configuring Redis in Spring Boot
+4. Cache-Aside Pattern
+5. Monitoring Cache Hit Rates
+6. Conclusion
+```
+
+`parseNumberedList` extracts only the section text, stripping the numbers:
+
+```java
+private List<String> parseNumberedList(String response) {
+    return Arrays.stream(response.split("\n"))
+            .map(String::trim)
+            .filter(line -> !line.isEmpty())
+            .filter(line -> line.matches("^\\d+[.)].+"))  // matches "1." or "1)"
+            .map(line -> line.replaceFirst("^\\d+[.)]\\s*", ""))
+            .toList();
+}
+```
+
+The regex `^\\d+[.)].+` matches lines that start with one or more digits followed by `.` or `)`.
+This handles both `1.` and `1)` formats that Gemini might produce. Lines that are preamble
+("Here is your outline:") or blank are filtered out.
+
+### Handling edge cases
+
+- **Empty response**: `parseNumberedList` returns an empty list. The controller returns an
+  empty outline — the client can retry rather than crashing.
+- **Wrong format** (Gemini returns prose instead of a list): the filter discards all lines,
+  returning an empty list. The system prompt constrains format, but AI output is not
+  100% guaranteed — defensive parsing is safer than regex exceptions.
+- **Category not found**: throws `ResourceNotFoundException` which the
+  `GlobalExceptionHandler` maps to a `404` response.
+
+---
+
+## Part 10: Full Post Generation
+
+### Using a user-provided outline
+
+Unlike outline generation, post generation takes the **outline as an input**. The flow is:
+
+1. User calls `POST /api/v1/ai/outline` → gets a `List<String>` back
+2. User reviews/edits the outline in the frontend
+3. User calls `POST /api/v1/ai/post` with the (possibly edited) outline
+
+This two-step flow is intentional: the outline is a checkpoint where the human can steer the
+AI before committing to a full 1000-word generation. It also makes the AI more reliable —
+"follow this exact structure" produces better output than "write whatever you think fits."
+
+`buildPostUserPrompt` renders the outline as a numbered list in the user message:
+
+```java
+private String buildPostUserPrompt(GeneratePostRequest request) {
+    StringBuilder prompt = new StringBuilder();
+    prompt.append("Write a complete blog post about: ").append(request.getTopic());
+    prompt.append("\n\nFollow this outline:\n");
+
+    for (int i = 0; i < request.getOutline().size(); i++) {
+        prompt.append(i + 1).append(". ").append(request.getOutline().get(i)).append("\n");
+    }
+    // ...
+}
+```
+
+### Extracting the title from Markdown
+
+The system prompt instructs Gemini to include an H1 title (`# Title`). `extractTitle`
+finds the first line starting with `# `:
+
+```java
+private String extractTitle(String content) {
+    return Arrays.stream(content.split("\n"))
+            .filter(line -> line.startsWith("# "))
+            .findFirst()
+            .map(line -> line.substring(2).trim())
+            .orElse("Untitled Post");
+}
+```
+
+`line.substring(2)` strips the `# ` prefix (the `#` and the space). If Gemini omits the
+H1 (it occasionally does despite instructions), the method falls back to `"Untitled Post"`
+rather than throwing — the content is still usable, just needs a title from the user.
+
+### Stub fields for excerpt and tags
+
+`GeneratePostResponse` includes `excerpt` and `suggestedTags` but both are empty in this
+commit (`""` and `List.of()`). These will be filled by real AI calls in commit 57 when
+`expandContent`, `generateExcerpt`, and `suggestTags` are added to `AIService`. The fields
+are present now so the response DTO shape does not change between commits.
+
+---
+
+*Next: Part 11 — Content Enhancement Features (added in Commit #57)*
