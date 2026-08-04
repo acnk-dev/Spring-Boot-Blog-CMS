@@ -80,9 +80,9 @@ and audit logging, but the Spring AI code is identical either way.
 1. Go to [Google AI Studio](https://aistudio.google.com/app/apikey)
 2. Sign in with a **personal Google account** (not a GCP workspace account if you can avoid it)
 3. Click **"Create API key"** → **"Create API key in new project"**
-   - ⚠️ Choose **"new project"** — do NOT pick an existing GCP project that has billing enabled.
-     If you use a billing-enabled project, the free tier quota is set to `0` and every call
-     returns `429 RESOURCE_EXHAUSTED`.
+    - ⚠️ Choose **"new project"** — do NOT pick an existing GCP project that has billing enabled.
+      If you use a billing-enabled project, the free tier quota is set to `0` and every call
+      returns `429 RESOURCE_EXHAUSTED`.
 4. Copy the key and store it somewhere safe — you won't see it in full again
 
 ### Free tier limits (as of June 2026)
@@ -770,4 +770,179 @@ are present now so the response DTO shape does not change between commits.
 
 ---
 
-*Next: Part 11 — Content Enhancement Features (added in Commit #57)*
+*Parts 11–13 below were added in Commit #57.*
+
+---
+
+## Part 11: Content Enhancement — Expand
+
+### The expand use case
+
+After a post is generated, authors often want to deepen specific sections. The expand feature
+takes a draft (or a single section) and asks Gemini to grow it to roughly 2× its current
+length while preserving the original structure and tone.
+
+This is different from "rewrite" — the AI is instructed not to change the core message,
+only to add more detail, examples, and explanations.
+
+### How `expandContent` works
+
+```java
+@Override
+public ExpandContentResponse expandContent(ExpandContentRequest request) {
+    Category category = findCategory(request.getCategoryId());
+
+    StringBuilder userPrompt = new StringBuilder("Expand and improve the following content:\n\n");
+    userPrompt.append(request.getContent());
+
+    if (request.getFocusAreas() != null && !request.getFocusAreas().isBlank()) {
+        userPrompt.append("\n\nFocus on: ").append(request.getFocusAreas());
+    }
+
+    String expandedContent = chatClient.prompt()
+            .system(promptTemplateService.getExpandSystemPrompt(category))
+            .user(userPrompt.toString())
+            .call()
+            .content();
+
+    return ExpandContentResponse.builder()
+            .expandedContent(expandedContent)
+            .originalWordCount(countWords(request.getContent()))
+            .expandedWordCount(countWords(expandedContent))
+            .generatedAt(LocalDateTime.now().toString())
+            .build();
+}
+```
+
+The optional `focusAreas` field lets the author steer the expansion: "add more code examples"
+or "explain the LRU algorithm in more depth." Without it, the model expands everything evenly.
+
+### Word count tracking
+
+`ExpandContentResponse` includes `originalWordCount` and `expandedWordCount`. These are
+computed by splitting on whitespace:
+
+```java
+private int countWords(String content) {
+    if (content == null || content.isBlank()) return 0;
+    return content.split("\\s+").length;
+}
+```
+
+This is a simple approximation — Markdown headers, code blocks, and punctuation all count
+as "words." It is accurate enough to show the author that expansion happened (e.g. 300 → 620
+words) without requiring a proper NLP tokenizer.
+
+### Maintaining tone while expanding
+
+The category-aware system prompt from `getExpandSystemPrompt` is the key to tone
+preservation. A Technology post is expanded with technical precision; a Food post is
+expanded with sensory language. The expand instruction appended by `PromptTemplateService`
+adds: "Maintain the original message and tone. Do not change the core structure."
+
+---
+
+## Part 12: Excerpt Generation
+
+### Why auto-generate excerpts?
+
+An excerpt is the 2–3 sentence preview shown on post listing pages and in meta descriptions.
+Writing a good excerpt manually is easy to forget and often done poorly under deadline
+pressure. AI can do it consistently and immediately after post generation.
+
+### How `generateExcerpt` works
+
+```java
+@Override
+public String generateExcerpt(ExcerptRequest request) {
+    int maxLength = request.getMaxLength() > 0 ? request.getMaxLength() : 200;
+
+    String userPrompt = String.format(
+            "Create an excerpt (max %d characters) for this blog post:\n\n%s",
+            maxLength, request.getContent());
+
+    return chatClient.prompt()
+            .system(promptTemplateService.getExcerptSystemPrompt())
+            .user(userPrompt)
+            .call()
+            .content()
+            .trim();
+}
+```
+
+`maxLength` defaults to 200 characters if not provided — a sensible meta-description length.
+The length constraint is embedded in the user prompt itself (`"max %d characters"`), not just
+the system prompt, because constraints repeated in the user message are more reliably followed.
+
+Note that `getExcerptSystemPrompt()` takes no category — the excerpt persona ("content
+summarizer") is content-agnostic. The AI reads the full post and summarizes regardless of
+category.
+
+### Integration with `generatePost`
+
+After commit 57, `generatePost` calls `generateExcerpt` automatically:
+
+```java
+ExcerptRequest excerptRequest = new ExcerptRequest();
+excerptRequest.setContent(content);
+String excerpt = generateExcerpt(excerptRequest);
+```
+
+This means every full post generation now returns a ready-to-use excerpt in the response,
+without the caller needing to make a separate API call.
+
+---
+
+## Part 13: Tag Suggestion
+
+### AI-powered content categorisation
+
+Tags are important for discoverability but tedious to choose consistently. The tag suggestion
+feature reads the generated content and returns 3–5 relevant tags as a comma-separated list.
+
+```java
+@Override
+public List<String> suggestTags(TagSuggestionRequest request) {
+    int maxTags = request.getMaxTags() > 0 ? request.getMaxTags() : 5;
+
+    String userPrompt = String.format(
+            "Suggest %d relevant tags for this blog post:\n\n%s",
+            maxTags, request.getContent());
+
+    String response = chatClient.prompt()
+            .system(promptTemplateService.getTagSuggestionSystemPrompt())
+            .user(userPrompt)
+            .call()
+            .content();
+
+    return Arrays.stream(response.split(","))
+            .map(String::trim)
+            .map(String::toLowerCase)
+            .filter(tag -> !tag.isEmpty())
+            .limit(maxTags)
+            .toList();
+}
+```
+
+### Parsing list responses
+
+The system prompt instructs Gemini to return `"redis, caching, spring-boot, java, performance"`.
+The parser:
+
+1. **Splits on `,`** — handles the comma-separated format
+2. **Trims whitespace** — removes spaces around each tag
+3. **Lowercases** — normalises `Redis` and `redis` to the same tag
+4. **Filters empty strings** — handles trailing commas
+5. **Limits to `maxTags`** — the model occasionally returns more than requested
+
+### Tag normalisation
+
+`.map(String::toLowerCase)` is the only normalisation applied here. In a production system
+you might also: strip special characters (`#`, `@`), replace spaces with hyphens for
+URL-safe tags, or deduplicate against existing tags in the database. Those steps belong in
+`TagService`, not `AIServiceImpl` — the AI service returns raw suggestions, and the tag
+service decides which ones to create or link.
+
+---
+
+*Next: Part 14 — Multi-Agent Architecture (added in Commit #58)*
