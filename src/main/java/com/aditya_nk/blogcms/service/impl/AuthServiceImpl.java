@@ -9,6 +9,7 @@ import com.aditya_nk.blogcms.entity.User;
 import com.aditya_nk.blogcms.enums.Role;
 import com.aditya_nk.blogcms.security.JwtUtil;
 import com.aditya_nk.blogcms.service.AuthService;
+import com.aditya_nk.blogcms.service.EmailService;
 import com.aditya_nk.blogcms.service.UserService;
 import io.jsonwebtoken.Claims;
 import lombok.RequiredArgsConstructor;
@@ -28,6 +29,7 @@ public class AuthServiceImpl implements AuthService {
     private final UserService userService;
     private final PasswordEncoder passwordEncoder;
     private final JwtUtil jwtUtil;
+    private final EmailService emailService;
 
     @Value("${jwt.access-token-expiration}")
     private long accessTokenExpiration;
@@ -51,10 +53,13 @@ public class AuthServiceImpl implements AuthService {
                 .build();
 
         // Save user
-        user = userService.createUser(user);
+        User savedUser = userService.createUser(user);
+
+        // Fire and Forget: send welcome email on background thread
+        emailService.sendWelcomeEmail(savedUser);
 
         // Generate tokens and return response
-        return buildAuthResponse(user);
+        return buildAuthResponse(savedUser);
     }
 
     @Override
