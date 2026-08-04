@@ -97,7 +97,9 @@ public class RateLimitFilter extends OncePerRequestFilter {
                 .build(bucketKey, configuration);
 
         if (bucket.tryConsume(1)) {
-            log.debug("Rate limit OK — key={}, remaining={}", bucketKeyStr, bucket.getAvailableTokens());
+            long remaining = bucket.getAvailableTokens();
+            response.setHeader("X-RateLimit-Remaining", String.valueOf(remaining));
+            log.debug("Rate limit OK — key={}, remaining={}", bucketKeyStr, remaining);
             filterChain.doFilter(request, response);
         } else {
             log.warn("Rate limit exceeded — key={}", bucketKeyStr);
@@ -176,6 +178,10 @@ public class RateLimitFilter extends OncePerRequestFilter {
             throws IOException {
         response.setStatus(HttpStatus.TOO_MANY_REQUESTS.value());
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        response.setHeader("X-RateLimit-Remaining", "0");
+        // Retry-After tells HTTP clients how many seconds to wait before retrying.
+        // 3600 = one hour, matching the refill window defined in RateLimitConfig.
+        response.setHeader("Retry-After", "3600");
 
         Map<String, Object> body = Map.of(
                 "status", 429,
