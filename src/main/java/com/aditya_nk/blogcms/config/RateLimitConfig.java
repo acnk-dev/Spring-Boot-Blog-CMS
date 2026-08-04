@@ -37,7 +37,7 @@ import java.time.Duration;
  * semantics on top of Redis Lua scripts so counter updates are atomic.</p>
  */
 @Slf4j
-@Configuration
+@Configuration(proxyBeanMethods = false)
 public class RateLimitConfig {
 
     // -----------------------------------------------------------------------
@@ -50,8 +50,8 @@ public class RateLimitConfig {
      */
     public static final Bandwidth SUBSCRIBER_BANDWIDTH =
             Bandwidth.builder()
-                    .capacity(100)
-                    .refillGreedy(100, Duration.ofHours(1))
+                    .capacity(10)
+                    .refillGreedy(10, Duration.ofHours(1))
                     .build();
 
     /**
@@ -70,8 +70,8 @@ public class RateLimitConfig {
      */
     public static final Bandwidth ADMIN_BANDWIDTH =
             Bandwidth.builder()
-                    .capacity(Long.MAX_VALUE / 2)
-                    .refillGreedy(Long.MAX_VALUE / 2, Duration.ofHours(1))
+                    .capacity(1_000_000)
+                    .refillGreedy(1_000_000, Duration.ofHours(1))
                     .build();
 
     // -----------------------------------------------------------------------
