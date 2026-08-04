@@ -945,4 +945,265 @@ service decides which ones to create or link.
 
 ---
 
-*Next: Part 14 — Multi-Agent Architecture (added in Commit #58)*
+*Parts 14–17 below were added in Commit #58.*
+
+---
+
+## Part 14: Multi-Agent Architecture
+
+### What is multi-agent AI?
+
+A multi-agent system is a pipeline where the output of one AI model becomes the input of
+another. Each "agent" is a focused, single-purpose AI call. The pipeline orchestrates them
+in sequence (or in parallel).
+
+In this commit, the pipeline has two agents:
+
+```mermaid
+flowchart LR
+    A["User Input\n(title + category)"] --> B["Agent 1: ImagePromptAgent\n(ChatClient / Gemini)\nGenerates image description"]
+    B --> C["Agent 2: Imagen 3\n(Google REST API)\nGenerates the actual image"]
+    C --> D["Files.write()\nSaves to disk"]
+    D --> E["imageUrl returned\nto caller"]
+```
+
+### When to use multiple agents
+
+Use a multi-agent approach when:
+
+- The problem has **distinct sub-tasks** that benefit from different models or different
+  prompts (text reasoning vs. image generation)
+- An intermediate result needs **human or programmatic review** before the next step
+  (outline → review → post)
+- A task is **too complex for one prompt** — splitting it into focused sub-tasks produces
+  better quality than one mega-prompt
+
+Do NOT use multiple agents when a single prompt can do the job — each agent call adds
+latency and cost.
+
+### Agent communication: output of one is input of the next
+
+```java
+// Agent 1 output
+String imagePrompt = imagePromptAgent.generateImagePrompt(title, category, style);
+
+// imagePrompt is passed directly as Agent 2's input
+String imageUrl = callImagenAndSave(imagePrompt);
+```
+
+The contract between agents is a plain `String`. Agent 1 is responsible for producing a
+prompt that Agent 2 can consume. If Agent 1 produces a poor prompt, Agent 2 generates a
+poor image — so the system prompt in `ImagePromptAgent` is carefully crafted to produce
+Imagen-3-friendly descriptions.
+
+---
+
+## Part 15: Image Prompt Agent
+
+### Why a separate agent for generating the prompt?
+
+Imagen 3 takes a text prompt and generates an image. The quality of the image depends
+entirely on the quality of the prompt. A generic prompt like "blog about Redis" produces
+a generic, often irrelevant image. A well-crafted prompt like:
+
+> "A modern server room with glowing blue LED lights, abstract data flow visualisation,
+> dark tech aesthetic, minimalist photography style, 16:9 aspect ratio, no text"
+
+...produces a professional, on-brand featured image.
+
+Rather than asking the user to write image prompts (a skill most blog authors don't have),
+`ImagePromptAgent` uses Gemini to translate a blog title and category into a high-quality
+Imagen prompt. This is the "AI helping AI" pattern.
+
+### ImagePromptAgent implementation
+
+```java
+@Component
+@RequiredArgsConstructor
+public class ImagePromptAgent {
+
+    private final ChatClient chatClient;
+
+    private static final String SYSTEM_PROMPT = """
+            You are an expert at creating image generation prompts for blog featured images.
+            Guidelines:
+            - Describe visual elements clearly (objects, scene, lighting, colors)
+            - Include the artistic style (photorealistic, illustration, minimalist, etc.)
+            - Avoid text or words in the image (AI struggles with rendering text accurately)
+            - Keep it professional and appropriate for a blog
+            Output: Return only the image prompt — no preamble, no explanation.
+            """;
+
+    public String generateImagePrompt(String title, String categoryName, String style) {
+        String userPrompt = String.format("""
+                Blog Title: %s
+                Category: %s
+                Preferred Style: %s
+                Generate a detailed prompt for the featured image.
+                """, title, categoryName, style != null ? style : "modern and professional");
+
+        return chatClient.prompt()
+                .system(SYSTEM_PROMPT)
+                .user(userPrompt)
+                .call()
+                .content()
+                .trim();
+    }
+}
+```
+
+Key prompt engineering choices:
+- **"Output: Return only the image prompt — no preamble"** — Gemini tends to add "Sure!
+  Here is your prompt:". Without this instruction, Agent 2 would receive that preamble as
+  part of the image prompt, confusing Imagen 3.
+- **"Avoid text or words in the image"** — AI image models consistently produce garbled,
+  unreadable text in images. This constraint steers the model toward purely visual elements.
+- **Style parameter** — lets the caller specify "minimalist", "photorealistic", "watercolor"
+  etc. Defaults to "modern and professional" if not provided.
+
+---
+
+## Part 16: Imagen 3 Integration
+
+### Why not use Spring AI's ImageModel?
+
+Spring AI has an `ImageModel` abstraction, but it is wired to DALL-E (OpenAI) or Vertex AI
+Imagen (requires GCP project + ADC). Neither works with our existing `GEMINI_API_KEY` setup.
+
+Imagen 3 is available via Google AI Studio's native REST API — a completely different
+endpoint from the OpenAI-compatible one we use for chat. We call it directly with Spring's
+`RestClient`:
+
+```
+POST https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict
+x-goog-api-key: {GEMINI_API_KEY}
+
+{
+  "instances": [{ "prompt": "A modern server room with glowing blue LED lights..." }],
+  "parameters": { "sampleCount": 1, "aspectRatio": "16:9" }
+}
+```
+
+Response:
+```json
+{
+  "predictions": [{
+    "bytesBase64Encoded": "<base64-encoded PNG>",
+    "mimeType": "image/png"
+  }]
+}
+```
+
+### RestClient — Spring's modern HTTP client
+
+`RestClient` was introduced in Spring 6.1 (Spring Boot 3.2+) as a fluent, synchronous
+replacement for `RestTemplate`:
+
+```java
+Map<String, Object> response = restClient.post()
+        .uri(IMAGEN_BASE_URL)
+        .header("x-goog-api-key", geminiApiKey)
+        .header("Content-Type", "application/json")
+        .body(requestBody)
+        .retrieve()
+        .body(Map.class);
+```
+
+`.retrieve()` executes the request. `.body(Map.class)` deserialises the JSON response into
+a `Map<String, Object>` using Jackson — no need to define a response DTO for a one-off call.
+
+### Saving the image bytes
+
+Imagen 3 returns the image as a base64-encoded string. We decode and write it directly
+to disk under `uploads/ai-images/`:
+
+```java
+byte[] imageBytes = Base64.getDecoder().decode(base64Image);
+
+String fileName = "ai-generated-" + UUID.randomUUID() + ".png";
+Path targetPath = aiImagesDir.resolve(fileName);
+Files.write(targetPath, imageBytes);
+
+return "/uploads/ai-images/" + fileName;
+```
+
+`Files.write()` is used here instead of `FileStorageService.storeFile()` because
+`storeFile()` accepts `MultipartFile` (user-uploaded files). AI-generated images come as
+raw `byte[]` — a different input type. Writing directly keeps both paths clean.
+
+### The `ai.image.enabled` toggle
+
+```java
+@Value("${ai.image.enabled:true}")
+private boolean imageEnabled;
+```
+
+When `ai.image.enabled=false`, the service skips the Imagen 3 call and returns a
+placeholder URL. Agent 1 (the prompt generator) still runs — so the `generatedPrompt`
+field always contains a real AI-crafted description even when the image is a placeholder.
+This is useful for development and CI where you don't want to consume Imagen 3 quota.
+
+---
+
+## Part 17: Orchestrating Agents
+
+### Sequential agent execution
+
+`ImageGenerationServiceImpl.generateFeaturedImage` orchestrates both agents:
+
+```java
+@Override
+public GenerateImageResponse generateFeaturedImage(GenerateImageRequest request) {
+    Category category = findCategory(request.getCategoryId());
+
+    // Agent 1 — text AI (Gemini) generates the image description
+    String imagePrompt = imagePromptAgent.generateImagePrompt(
+            request.getTitle(), category.getName(), request.getStyle());
+
+    if (!imageEnabled) {
+        return GenerateImageResponse.builder()
+                .imageUrl(PLACEHOLDER_URL)
+                .generatedPrompt(imagePrompt)
+                .generatedAt(LocalDateTime.now().toString())
+                .build();
+    }
+
+    // Agent 2 — image AI (Imagen 3) generates the actual image
+    String imageUrl = callImagenAndSave(imagePrompt);
+
+    return GenerateImageResponse.builder()
+            .imageUrl(imageUrl)
+            .generatedPrompt(imagePrompt)
+            .generatedAt(LocalDateTime.now().toString())
+            .build();
+}
+```
+
+The orchestrator is responsible for:
+1. **Data setup** — loading the category so Agent 1 knows the context
+2. **Calling Agent 1** — getting the image prompt
+3. **Deciding whether to run Agent 2** — based on the `ai.image.enabled` property
+4. **Calling Agent 2** — passing Agent 1's output as Agent 2's input
+5. **Assembling the response** — combining results from both agents
+
+Neither agent knows about the other. `ImagePromptAgent` returns a `String`. The orchestrator
+decides what to do with it. This separation means you can swap Imagen 3 for DALL-E or
+Stable Diffusion without touching `ImagePromptAgent`.
+
+### Logging and debugging multi-agent flows
+
+Each agent logs at the start and end of its work:
+
+```
+INFO  ImagePromptAgent        — Agent 1 — generating image prompt for: 'Redis Caching in Spring Boot'
+INFO  ImagePromptAgent        — Agent 1 — generated prompt: A modern server room with...
+INFO  ImageGenerationServiceImpl — Agent 2 — calling Imagen 3 for prompt: A modern server room...
+INFO  ImageGenerationServiceImpl — Saved AI-generated image: /uploads/ai-images/ai-generated-uuid.png (142580 bytes)
+```
+
+With these logs, you can trace exactly which agent ran, what it produced, and how long it
+took — essential when debugging why an image looks wrong or why the pipeline is slow.
+
+---
+
+*Next: Part 18 — Usage Tracking (added in Commit #59)*
