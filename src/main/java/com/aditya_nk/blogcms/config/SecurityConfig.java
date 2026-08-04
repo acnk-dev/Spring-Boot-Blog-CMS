@@ -1,6 +1,7 @@
 package com.aditya_nk.blogcms.config;
 
 import com.aditya_nk.blogcms.security.JwtAuthenticationFilter;
+import com.aditya_nk.blogcms.security.RateLimitFilter;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -26,6 +27,7 @@ import java.util.List;
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
+    private final RateLimitFilter rateLimitFilter;
 
     @Bean
     public PasswordEncoder passwordEncoder() {
@@ -63,7 +65,9 @@ public class SecurityConfig {
                         // Any future endpoint requires authentication by default
                         .anyRequest().authenticated()
                 )
-                .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+                .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+                // RateLimiterFilter runs after JWT auth so it can read the authenticated principal
+                .addFilterAfter(rateLimitFilter, JwtAuthenticationFilter.class);
 
         return http.build();
     }
