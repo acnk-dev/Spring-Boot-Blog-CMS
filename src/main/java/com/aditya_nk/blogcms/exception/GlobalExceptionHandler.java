@@ -160,6 +160,26 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Handle AI monthly usage limit exceeded — 429 Too Many Requests.
+     */
+    @ExceptionHandler(AIUsageLimitException.class)
+    public ResponseEntity<ErrorResponse> handleAIUsageLimitException(
+            AIUsageLimitException ex,
+            HttpServletRequest request
+    ) {
+        ErrorResponse errorResponse = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.TOO_MANY_REQUESTS.value())
+                .error("AI Usage Limit Exceeded")
+                .message(ex.getMessage())
+                .path(request.getRequestURI())
+                .build();
+
+        log.warn("AI usage limit exceeded: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body(errorResponse);
+    }
+
+    /**
      * Handle all other exceptions.
      */
     @ExceptionHandler(Exception.class)

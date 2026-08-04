@@ -1206,4 +1206,274 @@ took — essential when debugging why an image looks wrong or why the pipeline i
 
 ---
 
-*Next: Part 18 — Usage Tracking (added in Commit #59)*
+*Parts 18–21 and Summary below were added in Commit #59.*
+
+---
+
+## Part 18: Usage Tracking
+
+### Why limit AI usage?
+
+Every AI call costs money — Gemini charges per token, Imagen 3 charges per image. Without
+limits, a single user could generate thousands of posts, exhausting your API quota and
+running up unexpected bills. Usage limits enforce a tier model:
+
+| Role | Monthly limit | Rationale |
+|------|--------------|-----------|
+| SUBSCRIBER | 5 | Free tier — enough to try the feature |
+| AUTHOR | 50 | Paid tier — enough for active bloggers |
+| ADMIN | Unlimited | Platform operators need unrestricted access |
+
+### Redis for usage counters
+
+Redis is ideal for usage counters because:
+- **Atomic increment** — `INCR` is guaranteed atomic across concurrent requests
+- **TTL support** — keys auto-expire at month end with `EXPIRE`, no cleanup job needed
+- **Fast** — sub-millisecond reads, no database roundtrip per AI request
+
+### Key design: `ai:usage:{userId}:{yyyy-MM}`
+
+```
+ai:usage:42:2026-06  →  "7"   (user 42 has made 7 AI calls this month)
+ai:usage:17:2026-06  →  "2"
+```
+
+The month (`yyyy-MM`) is embedded in the key rather than using a single key with a reset
+flag. This means:
+- Old keys accumulate for a few months, then Redis GC's them via TTL
+- No reset job needed — June's key simply expires; July gets a fresh key automatically
+- Historical data is preserved (useful for debugging) until TTL expires
+
+### TTL for automatic monthly reset
+
+```java
+if (newCount != null && newCount == 1) {
+    redisTemplate.expire(key, ttlUntilMonthEnd());
+}
+```
+
+We set the TTL only on the **first write** (when `newCount == 1`). If we set TTL on every
+write, subsequent calls would reset the expiry timer — the key would never expire as long as
+the user keeps using AI features. Setting it once on first write means the TTL is always
+"time until end of the month this key was first created."
+
+---
+
+## Part 19: AI Controller Design
+
+### Controller structure
+
+`AIController` follows the standard thin-controller pattern — validate, check usage,
+call service, return response:
+
+```java
+@PostMapping("/outline")
+@PreAuthorize("isAuthenticated()")
+public ResponseEntity<GenerateOutlineResponse> generateOutline(
+        @Valid @RequestBody GenerateOutlineRequest request) {
+
+    User user = currentUser();
+    aiUsageService.checkAndIncrementUsage(user.getId(), user.getRole());
+
+    return ResponseEntity.ok(aiService.generateOutline(request));
+}
+```
+
+Each endpoint does exactly three things: extract the user, check/increment usage, call the
+service. No business logic leaks into the controller.
+
+### Extracting the current user
+
+```java
+private User currentUser() {
+    Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+    return (User) auth.getPrincipal();
+}
+```
+
+Because `User` implements `UserDetails` directly (established in commit 31), `getPrincipal()`
+returns our own `User` entity. We get `user.getId()` and `user.getRole()` directly — no
+database lookup needed.
+
+### Image generation counts as 2 uses
+
+```java
+// Image generation counts as 2 uses — two AI calls (prompt agent + image model)
+aiUsageService.checkAndIncrementUsage(user.getId(), user.getRole());
+aiUsageService.checkAndIncrementUsage(user.getId(), user.getRole());
+```
+
+Image generation runs two AI calls internally (Agent 1 + Imagen 3). Counting it as 2 uses
+reflects the actual resource consumption. A SUBSCRIBER's 5 monthly uses would generate 2
+images or 5 outlines — the limit is expressed in "AI call equivalents."
+
+### 429 when limit exceeded
+
+`AIUsageLimitException` is thrown by `AIUsageServiceImpl` and caught by
+`GlobalExceptionHandler`:
+
+```java
+@ExceptionHandler(AIUsageLimitException.class)
+public ResponseEntity<ErrorResponse> handleAIUsageLimitException(...) {
+    return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body(errorResponse);
+}
+```
+
+The client receives:
+```json
+{
+  "status": 429,
+  "error": "AI Usage Limit Exceeded",
+  "message": "Monthly AI usage limit reached (5/5). Upgrade your plan for more generations."
+}
+```
+
+---
+
+## Part 20: Production Considerations
+
+### Cost monitoring and alerts
+
+In production, set up alerts when AI spend crosses a threshold. Google Cloud provides
+billing alerts — configure one at 80% of your monthly budget. On the application side,
+log every AI call with its token count:
+
+```java
+log.info("AI call: user={}, model={}, inputTokens={}, outputTokens={}",
+         userId, model, usage.getPromptTokens(), usage.getCompletionTokens());
+```
+
+Aggregate these logs in a monitoring tool (Grafana, Datadog) to see which features cost
+the most and which users are the heaviest consumers.
+
+### Caching AI responses (when appropriate)
+
+Not all AI responses are unique. If 100 users all request an outline for "Introduction to
+Redis Caching" in the Technology category, generating 100 identical outlines wastes API
+quota. Consider caching with a composite key:
+
+```java
+// Cache key: "outline:{categoryId}:{topic-hash}"
+// TTL: 24 hours (outlines don't need to be fresh)
+```
+
+This works well for outlines and tag suggestions. It does NOT work for full posts (users
+expect unique content) or image generation (users expect unique images).
+
+### Fallback when AI service unavailable
+
+Wrap AI calls in a try-catch and return a meaningful error rather than a 500:
+
+```java
+try {
+    return aiService.generateOutline(request);
+} catch (Exception e) {
+    log.error("AI service unavailable: {}", e.getMessage());
+    throw new BadRequestException("AI service is temporarily unavailable. Please try again.");
+}
+```
+
+In a more resilient system, use a circuit breaker (Resilience4j) that opens after N
+consecutive failures and returns a fallback immediately without waiting for timeouts.
+
+### Rate limiting vs usage limiting
+
+This project has both:
+
+| | Rate limiting (commit 45–46) | Usage limiting (this commit) |
+|---|---|---|
+| **What it limits** | Requests per hour | AI generations per month |
+| **Storage** | Redis (Bucket4j) | Redis (simple counter) |
+| **Reset** | Continuous token refill | Monthly (TTL) |
+| **Purpose** | Protect API from bursts | Control AI cost per user |
+
+Rate limiting prevents abuse in real time. Usage limiting enforces a business model over
+time. Both are needed — rate limiting without usage limiting lets users slowly exhaust
+your quota; usage limiting without rate limiting lets users burn their monthly quota in
+one burst.
+
+---
+
+## Part 21: Complete AI Workflow
+
+### End-to-end flow
+
+```mermaid
+sequenceDiagram
+    actor Author
+    participant Controller as AIController
+    participant Usage as AIUsageService
+    participant AI as AIService
+    participant Gemini as Gemini (ChatClient)
+
+    Author->>Controller: POST /api/v1/ai/outline {topic, categoryId}
+    Controller->>Usage: checkAndIncrementUsage(userId, AUTHOR)
+    Usage-->>Controller: OK (3/50 used)
+    Controller->>AI: generateOutline(request)
+    AI->>Gemini: prompt().system(...).user(...).call()
+    Gemini-->>AI: "1. Introduction\n2. Core Concepts\n..."
+    AI-->>Controller: GenerateOutlineResponse{outline: [...]}
+    Controller-->>Author: 200 OK {topic, category, outline, generatedAt}
+
+    Author->>Controller: POST /api/v1/ai/post {topic, categoryId, outline}
+    Controller->>Usage: checkAndIncrementUsage(userId, AUTHOR)
+    Usage-->>Controller: OK (4/50 used)
+    Controller->>AI: generatePost(request)
+    AI->>Gemini: generate post content
+    Gemini-->>AI: "# Redis Caching in Spring Boot\n..."
+    AI->>Gemini: generateExcerpt (auto)
+    AI->>Gemini: suggestTags (auto)
+    AI-->>Controller: GeneratePostResponse{title, content, excerpt, tags}
+    Controller-->>Author: 200 OK
+```
+
+### Testing AI features
+
+1. **Get a JWT**: `POST /api/v1/auth/login` with an AUTHOR account
+2. **Generate an outline**: `POST /api/v1/ai/outline` with `{topic: "Redis Caching", categoryId: 1}`
+3. **Review and edit the outline** in the response
+4. **Generate the post**: `POST /api/v1/ai/post` with the outline from step 2
+5. **Check your usage**: `GET /api/v1/ai/usage`
+6. **Test the limit**: repeat step 2 until you exhaust the monthly limit — verify you get `429`
+
+---
+
+## Summary
+
+### What we built across Week 7 (commits 47–51)
+
+| Commit | What was added | Key concept |
+|--------|---------------|-------------|
+| 47 | Spring AI + Gemini setup | ChatClient, OpenAI-compatible endpoint, BOM |
+| 48 | Category-based prompt templates | Enum as config, prompt composition pattern |
+| 49 | Outline and post generation | Two-step AI workflow, numbered list parsing |
+| 50 | Expand, excerpt, tag suggestion | Multi-call within one service method |
+| 51 | Image generation (Imagen 3) | Multi-agent pipeline, RestClient, base64 decode |
+| 59 | AIController + usage limits | Redis counters, TTL-based monthly reset, 429 handling |
+
+### Key concepts learned
+
+- **Spring AI's `ChatClient`** abstracts away the underlying model — swap Gemini for GPT-4o
+  by changing two properties
+- **System prompt + user prompt** — the system prompt sets the persona and rules; the user
+  prompt provides the specific task
+- **Prompt engineering** — format constraints, explicit output structure, and avoiding
+  common failure modes (text in images, missing preamble)
+- **Multi-agent pipelines** — each agent is focused and single-purpose; the orchestrator
+  connects them
+- **Defensive AI response parsing** — always filter, never index; always provide fallbacks
+- **Redis for usage tracking** — atomic `INCR`, TTL-based reset, composite keys
+
+### Homework: AI Generation History (ticket BLOG-105)
+
+Store each AI generation in a database table so users can review and reuse past results:
+
+- Entity: `AIGeneration` with `userId`, `type` (OUTLINE/POST/EXPAND/EXCERPT/TAGS/IMAGE),
+  `prompt`, `response`, `categoryId`, `createdAt`
+- Migration: `V12__create_ai_generations_table.sql`
+- Endpoints: `GET /api/v1/ai/history`, `GET /api/v1/ai/history/{id}`,
+  `DELETE /api/v1/ai/history/{id}`, `POST /api/v1/ai/regenerate/{id}`
+- Regeneration counts toward the monthly usage limit
+
+Apply the patterns from this week: entity → repository → service → controller, soft deletes,
+paginated list endpoint, `@PreAuthorize` ownership check.
