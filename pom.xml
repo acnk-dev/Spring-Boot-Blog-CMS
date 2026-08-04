@@ -28,7 +28,20 @@
 	</scm>
 	<properties>
 		<java.version>21</java.version>
+		<spring-ai.version>2.0.0</spring-ai.version>
 	</properties>
+
+	<dependencyManagement>
+		<dependencies>
+			<dependency>
+				<groupId>org.springframework.ai</groupId>
+				<artifactId>spring-ai-bom</artifactId>
+				<version>${spring-ai.version}</version>
+				<type>pom</type>
+				<scope>import</scope>
+			</dependency>
+		</dependencies>
+	</dependencyManagement>
 	<dependencies>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
@@ -143,6 +156,14 @@
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-mail</artifactId>
+		</dependency>
+
+		<!-- Spring AI — OpenAI starter pointed at Gemini's OpenAI-compatible endpoint.
+             Gemini exposes an OpenAI-compatible REST API so the OpenAI starter works
+             with just a GEMINI_API_KEY — no GCP project or gcloud CLI needed. -->
+		<dependency>
+			<groupId>org.springframework.ai</groupId>
+			<artifactId>spring-ai-starter-model-openai</artifactId>
 		</dependency>
 	</dependencies>
 
