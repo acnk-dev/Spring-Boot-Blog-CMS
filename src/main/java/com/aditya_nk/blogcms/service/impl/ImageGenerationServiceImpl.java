@@ -31,8 +31,8 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class ImageGenerationServiceImpl implements ImageGenerationService {
 
-    private static final String IMAGEN_BASE_URL =
-            "https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict";
+    private static final String GEMINI_IMAGE_URL =
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent";
     private static final String PLACEHOLDER_URL = "/images/placeholder-featured.png";
 
     private final ImagePromptAgent imagePromptAgent;
@@ -84,8 +84,8 @@ public class ImageGenerationServiceImpl implements ImageGenerationService {
                     .build();
         }
 
-        // Agent 2 — calls Imagen 3 REST API
-        log.info("Agent 2 — calling Imagen 3 for prompt: {}", imagePrompt);
+        // Agent 2 — calls Gemini image generation REST API
+        log.info("Agent 2 — calling Gemini image generation for prompt: {}", imagePrompt);
         String imageUrl = callImagenAndSave(imagePrompt);
 
         return GenerateImageResponse.builder()
@@ -98,31 +98,47 @@ public class ImageGenerationServiceImpl implements ImageGenerationService {
     @SuppressWarnings("unchecked")
     private String callImagenAndSave(String imagePrompt) {
         Map<String, Object> requestBody = Map.of(
-                "instances", List.of(Map.of("prompt", imagePrompt)),
-                "parameters", Map.of(
-                        "sampleCount", 1,
-                        "aspectRatio", "16:9"
+                "contents", List.of(Map.of(
+                        "parts", List.of(Map.of("text", imagePrompt))
+                )),
+                "generationConfig", Map.of(
+                        "responseModalities", List.of("IMAGE")
                 )
         );
 
         Map<String, Object> response = restClient.post()
-                .uri(IMAGEN_BASE_URL)
+                .uri(GEMINI_IMAGE_URL)
                 .header("x-goog-api-key", geminiApiKey)
                 .header("Content-Type", "application/json")
                 .body(requestBody)
                 .retrieve()
                 .body(Map.class);
 
-        if (response == null || !response.containsKey("predictions")) {
-            throw new FileStorageException("Imagen 3 returned an empty response", null);
+        if (response == null || !response.containsKey("candidates")) {
+            throw new FileStorageException("Gemini image generation returned an empty response", null);
         }
 
-        List<Map<String, Object>> predictions = (List<Map<String, Object>>) response.get("predictions");
-        if (predictions == null || predictions.isEmpty()) {
-            throw new FileStorageException("Imagen 3 returned no image predictions", null);
+        List<Map<String, Object>> candidates = (List<Map<String, Object>>) response.get("candidates");
+        if (candidates == null || candidates.isEmpty()) {
+            throw new FileStorageException("Gemini image generation returned no candidates", null);
         }
 
-        String base64Image = (String) predictions.get(0).get("bytesBase64Encoded");
+        Map<String, Object> content = (Map<String, Object>) candidates.get(0).get("content");
+        List<Map<String, Object>> parts = (List<Map<String, Object>>) content.get("parts");
+
+        String base64Image = null;
+        for (Map<String, Object> part : parts) {
+            if (part.containsKey("inlineData")) {
+                Map<String, Object> inlineData = (Map<String, Object>) part.get("inlineData");
+                base64Image = (String) inlineData.get("data");
+                break;
+            }
+        }
+
+        if (base64Image == null) {
+            throw new FileStorageException("Gemini image generation returned no image data in parts", null);
+        }
+
         byte[] imageBytes = Base64.getDecoder().decode(base64Image);
 
         return saveImageBytes(imageBytes);
@@ -142,4 +158,5 @@ public class ImageGenerationServiceImpl implements ImageGenerationService {
         return "/uploads/ai-images/" + fileName;
     }
 }
+
 

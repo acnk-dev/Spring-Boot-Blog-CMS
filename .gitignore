@@ -39,3 +39,6 @@ build/
 *.sqlite
 uploads/
 plans/
+
+#Logs
+logs/
