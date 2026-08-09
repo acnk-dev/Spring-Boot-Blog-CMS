@@ -8,6 +8,7 @@ import com.aditya_nk.blogcms.service.FileStorageService;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Profile;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.UrlResource;
 import org.springframework.stereotype.Service;
@@ -34,8 +35,14 @@ import java.util.UUID;
  *   {uploadDir}/
  *   ├── posts/           ← featured images for blog posts
  *   └── avatars/         ← user profile pictures
+ *
+ * Active under every profile except "prod" (including the default, no
+ * profile case) — R2FileStorageServiceImpl replaces this bean only when
+ * "prod" is active, so exactly one FileStorageService implementation is
+ * ever on the context at a time.
  */
 @Service
+@Profile("!prod")
 @RequiredArgsConstructor
 @Slf4j
 public class LocalFileStorageServiceImpl implements FileStorageService {
