@@ -1,0 +1,1201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rate Limiting: Algorithms, Design, and Trade-offs</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+        /* ── Reset & Base ─────────────────────────────────────── */
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg:           #ffffff;
+            --surface:      #f8fafc;
+            --surface2:     #f1f5f9;
+            --border:       #e2e8f0;
+            --border-dark:  #cbd5e1;
+            --text:         #1e293b;
+            --text-muted:   #64748b;
+            --accent:       #1d4ed8;
+            --accent-light: #eff6ff;
+            --green:        #15803d;
+            --green-light:  #f0fdf4;
+            --red:          #b91c1c;
+            --red-light:    #fef2f2;
+            --amber:        #b45309;
+            --amber-light:  #fffbeb;
+            --blue:         #1d4ed8;
+            --blue-light:   #eff6ff;
+            --teal:         #0f766e;
+            --teal-light:   #f0fdfa;
+            --toc-w:        260px;
+            --radius:       8px;
+            --font-mono:    'JetBrains Mono', 'Fira Code', monospace;
+            --shadow-sm:    0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+            --shadow:       0 4px 6px rgba(0,0,0,0.05), 0 2px 4px rgba(0,0,0,0.04);
+        }
+
+        html { scroll-behavior: smooth; }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+            font-size: 16px;
+            line-height: 1.75;
+            display: flex;
+        }
+
+        /* ── TOC Sidebar ──────────────────────────────────────── */
+        #toc {
+            position: fixed;
+            top: 0; left: 0;
+            width: var(--toc-w);
+            height: 100vh;
+            overflow-y: auto;
+            background: var(--surface);
+            border-right: 1px solid var(--border);
+            padding: 2rem 1.25rem;
+            z-index: 100;
+        }
+
+        #toc h2 {
+            font-size: 0.68rem;
+            font-weight: 700;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            margin-bottom: 1rem;
+        }
+
+        #toc ul { list-style: none; }
+        #toc ul li { margin: 0.1rem 0; }
+
+        #toc ul li a {
+            display: block;
+            padding: 0.28rem 0.75rem;
+            border-radius: 5px;
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.82rem;
+            transition: all 0.15s;
+            border-left: 2px solid transparent;
+        }
+
+        #toc ul li a:hover {
+            color: var(--accent);
+            background: var(--accent-light);
+        }
+
+        #toc ul li a.active {
+            color: var(--accent);
+            background: var(--accent-light);
+            border-left-color: var(--accent);
+            font-weight: 500;
+        }
+
+        #toc ul li.sub a { padding-left: 1.5rem; font-size: 0.77rem; }
+
+        /* ── Main Content ─────────────────────────────────────── */
+        main {
+            margin-left: var(--toc-w);
+            max-width: 900px;
+            width: 100%;
+            padding: 3rem 3.5rem 6rem;
+        }
+
+        /* ── Hero Header ──────────────────────────────────────── */
+        .hero {
+            margin-bottom: 3rem;
+            padding-bottom: 2rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .hero-tag {
+            display: inline-block;
+            font-size: 0.7rem;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--accent);
+            background: var(--accent-light);
+            border: 1px solid #bfdbfe;
+            border-radius: 20px;
+            padding: 0.2rem 0.85rem;
+            margin-bottom: 1.1rem;
+        }
+
+        .hero h1 {
+            font-size: 2.4rem;
+            font-weight: 800;
+            line-height: 1.15;
+            color: #0f172a;
+            margin-bottom: 0.9rem;
+        }
+
+        .hero p {
+            color: var(--text-muted);
+            font-size: 1.05rem;
+            max-width: 680px;
+        }
+
+        /* ── Headings ─────────────────────────────────────────── */
+        h2 {
+            font-size: 1.55rem;
+            font-weight: 700;
+            color: #0f172a;
+            margin: 3rem 0 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 2px solid var(--border);
+            scroll-margin-top: 2rem;
+        }
+
+        h3 {
+            font-size: 1.15rem;
+            font-weight: 600;
+            color: #1e293b;
+            margin: 2rem 0 0.65rem;
+            scroll-margin-top: 2rem;
+        }
+
+        h4 {
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--accent);
+            margin: 1.5rem 0 0.45rem;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        p { margin-bottom: 1rem; color: var(--text); }
+
+        strong { color: #0f172a; font-weight: 600; }
+
+        /* ── Lists ────────────────────────────────────────────── */
+        ul, ol { padding-left: 1.5rem; margin-bottom: 1rem; }
+        li { margin: 0.3rem 0; color: var(--text); }
+        li strong { color: #0f172a; }
+
+        ul.plain { list-style: none; padding: 0; }
+        ul.plain li {
+            padding: 0.4rem 0.75rem 0.4rem 1.75rem;
+            position: relative;
+            border-left: 2px solid var(--border-dark);
+            margin: 0.35rem 0;
+        }
+        ul.plain li::before {
+            content: '›';
+            position: absolute;
+            left: 0.45rem;
+            color: var(--accent);
+            font-weight: bold;
+        }
+
+        /* ── Pros / Cons ──────────────────────────────────────── */
+        .pros-cons {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            margin: 1rem 0 1.5rem;
+        }
+        .pros, .cons {
+            border-radius: var(--radius);
+            padding: 1rem 1.25rem;
+        }
+        .pros {
+            background: var(--green-light);
+            border: 1px solid #bbf7d0;
+        }
+        .cons {
+            background: var(--red-light);
+            border: 1px solid #fecaca;
+        }
+        .pros h5 { color: var(--green); margin-bottom: 0.6rem; font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 700; }
+        .cons h5 { color: var(--red);   margin-bottom: 0.6rem; font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 700; }
+        .pros li::marker { color: var(--green); }
+        .cons li::marker { color: var(--red); }
+        .pros li, .cons li { font-size: 0.9rem; color: #1e293b; }
+
+        /* ── Tables ───────────────────────────────────────────── */
+        .table-wrap {
+            overflow-x: auto;
+            margin: 1.25rem 0 1.75rem;
+            border-radius: var(--radius);
+            border: 1px solid var(--border);
+            box-shadow: var(--shadow-sm);
+        }
+
+        table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+        thead tr { background: var(--surface2); }
+        thead th {
+            padding: 0.65rem 1rem;
+            text-align: left;
+            font-weight: 600;
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            border-bottom: 1px solid var(--border);
+        }
+        tbody tr { border-bottom: 1px solid var(--border); transition: background 0.12s; }
+        tbody tr:last-child { border-bottom: none; }
+        tbody tr:hover { background: var(--surface); }
+        tbody td { padding: 0.65rem 1rem; color: #334155; }
+        tbody td strong { color: #1e293b; }
+
+        /* ── Code ─────────────────────────────────────────────── */
+        pre {
+            background: #f8fafc;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1.1rem 1.4rem;
+            overflow-x: auto;
+            margin: 1rem 0 1.5rem;
+            font-family: var(--font-mono);
+            font-size: 0.84rem;
+            line-height: 1.65;
+            color: #334155;
+        }
+
+        code {
+            font-family: var(--font-mono);
+            font-size: 0.84em;
+            background: var(--accent-light);
+            color: var(--accent);
+            padding: 0.12em 0.4em;
+            border-radius: 4px;
+            border: 1px solid #bfdbfe;
+        }
+
+        pre code { background: none; color: inherit; padding: 0; border: none; font-size: inherit; }
+
+        /* ── Mermaid Diagrams ─────────────────────────────────── */
+        .diagram-wrap {
+            background: #ffffff;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1.5rem;
+            margin: 1.25rem 0 1.75rem;
+            overflow-x: auto;
+            display: flex;
+            justify-content: center;
+            box-shadow: var(--shadow-sm);
+        }
+
+        .diagram-wrap .mermaid { max-width: 100%; }
+
+        /* ── Arrow Animation ──────────────────────────────────── */
+        @keyframes flowDash {
+            to { stroke-dashoffset: 0; }
+        }
+
+        .animated-edge {
+            animation: flowDash 1.2s ease-out forwards;
+        }
+
+        /* ── Info Callout ─────────────────────────────────────── */
+        .callout {
+            border-radius: var(--radius);
+            padding: 0.9rem 1.1rem;
+            margin: 1.25rem 0;
+            display: flex;
+            gap: 0.75rem;
+            align-items: flex-start;
+            font-size: 0.9rem;
+        }
+        .callout.info  { background: var(--blue-light);  border-left: 3px solid #3b82f6; }
+        .callout.warn  { background: var(--amber-light); border-left: 3px solid #f59e0b; }
+        .callout.error { background: var(--red-light);   border-left: 3px solid #ef4444; }
+        .callout-icon  { font-size: 1rem; flex-shrink: 0; margin-top: 0.05rem; }
+
+        /* ── Algorithm Section ────────────────────────────────── */
+        .algo-section {
+            border-radius: var(--radius);
+            border: 1px solid var(--border);
+            background: var(--surface);
+            padding: 0.1rem 2rem 1.5rem;
+            margin: 2rem 0;
+            box-shadow: var(--shadow-sm);
+        }
+
+        /* ── Properties Grid ─────────────────────────────────── */
+        .prop-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+            gap: 0.65rem;
+            margin: 1rem 0 1.5rem;
+        }
+        .prop-card {
+            background: #ffffff;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 0.7rem 0.9rem;
+            box-shadow: var(--shadow-sm);
+        }
+        .prop-card .label { font-size: 0.68rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.25rem; font-weight: 600; }
+        .prop-card .value { font-size: 0.87rem; color: #1e293b; font-weight: 500; }
+
+        /* ── Divider ──────────────────────────────────────────── */
+        hr { border: none; border-top: 1px solid var(--border); margin: 2.5rem 0; }
+
+        /* ── Real-world card ──────────────────────────────────── */
+        .example-card {
+            background: #ffffff;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1.25rem 1.5rem;
+            margin: 1.1rem 0;
+            box-shadow: var(--shadow-sm);
+        }
+        .example-card h4 { margin-top: 0; }
+        .example-card .badge {
+            display: inline-block;
+            font-size: 0.68rem;
+            font-weight: 600;
+            padding: 0.18rem 0.6rem;
+            border-radius: 20px;
+            margin-bottom: 0.65rem;
+        }
+        .badge.token   { background: var(--blue-light);  color: #1d4ed8; border: 1px solid #bfdbfe; }
+        .badge.sliding { background: var(--teal-light);  color: #0f766e; border: 1px solid #99f6e4; }
+        .badge.leaky   { background: var(--green-light); color: #15803d; border: 1px solid #bbf7d0; }
+        .badge.fixed   { background: var(--amber-light); color: #b45309; border: 1px solid #fde68a; }
+
+        /* ── HTTP Response Block ──────────────────────────────── */
+        .http-block {
+            background: #f8fafc;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1.1rem 1.4rem;
+            font-family: var(--font-mono);
+            font-size: 0.81rem;
+            line-height: 1.9;
+            color: #475569;
+            margin: 1rem 0 1.5rem;
+        }
+        .http-block .status     { color: #b91c1c; font-weight: bold; }
+        .http-block .key        { color: #1d4ed8; }
+        .http-block .value      { color: #15803d; }
+        .http-block .header-key { color: #0f766e; }
+
+        /* ── References ───────────────────────────────────────── */
+        .ref-list { list-style: none; padding: 0; }
+        .ref-list li { margin: 0.45rem 0; }
+        .ref-list a {
+            color: var(--accent);
+            text-decoration: none;
+            font-size: 0.9rem;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+        .ref-list a:hover { text-decoration: underline; }
+        .ref-list a::before { content: '↗'; font-size: 0.8em; }
+
+        /* ── Scrollbar ────────────────────────────────────────── */
+        ::-webkit-scrollbar { width: 5px; height: 5px; }
+        ::-webkit-scrollbar-track { background: var(--surface); }
+        ::-webkit-scrollbar-thumb { background: var(--border-dark); border-radius: 3px; }
+
+        /* ── Responsive ───────────────────────────────────────── */
+        @media (max-width: 900px) {
+            #toc { display: none; }
+            main { margin-left: 0; padding: 2rem 1.5rem; }
+            .pros-cons { grid-template-columns: 1fr; }
+            .hero h1 { font-size: 1.85rem; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- ── Sidebar TOC ────────────────────────────────────────── -->
+<nav id="toc">
+    <h2>Contents</h2>
+    <ul>
+        <li><a href="#what-is-rate-limiting">What is Rate Limiting?</a></li>
+        <li><a href="#why-it-matters">Why It Matters</a></li>
+        <li><a href="#algorithms">Algorithms</a></li>
+        <li class="sub"><a href="#token-bucket">1. Token Bucket</a></li>
+        <li class="sub"><a href="#leaky-bucket">2. Leaky Bucket</a></li>
+        <li class="sub"><a href="#sliding-window">3. Sliding Window</a></li>
+        <li class="sub"><a href="#fixed-window">4. Fixed Window</a></li>
+        <li><a href="#comparison">Algorithm Comparison</a></li>
+        <li><a href="#real-world">Real-World Examples</a></li>
+        <li><a href="#distributed">Distributed Rate Limiting</a></li>
+        <li><a href="#tradeoffs">Trade-offs</a></li>
+        <li><a href="#summary">Summary</a></li>
+        <li><a href="#references">References</a></li>
+    </ul>
+</nav>
+
+<!-- ── Main ──────────────────────────────────────────────── -->
+<main>
+
+    <!-- Hero -->
+    <div class="hero">
+        <div class="hero-tag">System Design</div>
+        <h1>Rate Limiting: Algorithms, Design, and Trade-offs</h1>
+        <p>A deep dive into the four core rate limiting algorithms — Token Bucket, Leaky Bucket, Sliding Window, and Fixed Window — with animated diagrams, worked examples, and real-world use cases.</p>
+    </div>
+
+    <!-- ── Section 1 ──────────────────────────────────────── -->
+    <section id="what-is-rate-limiting">
+        <h2>What is Rate Limiting?</h2>
+        <p><strong>Rate limiting</strong> is a technique to control the number of requests a client can make to an API within a specified time period. It's a form of <strong>throttling</strong> — a protective mechanism that enforces a maximum quota per client.</p>
+
+        <p>Instead of allowing unlimited requests, a rate limiter answers these questions:</p>
+        <ul class="plain">
+            <li><strong>"Can this request proceed?"</strong> — Yes, the quota still has remaining capacity</li>
+            <li><strong>"Should this request be blocked?"</strong> — Yes, the quota is exhausted and must wait for the refill period</li>
+        </ul>
+
+        <div class="callout info">
+            <span class="callout-icon">💡</span>
+            <span><strong>Example:</strong> An API might allow 100 requests per hour per user. The 101st request is rejected with an HTTP <code>429 Too Many Requests</code> status.</span>
+        </div>
+    </section>
+
+    <!-- ── Section 2 ──────────────────────────────────────── -->
+    <section id="why-it-matters">
+        <h2>Why Rate Limiting Matters</h2>
+
+        <h3>Problem: Abuse and Resource Exhaustion</h3>
+        <p>Without rate limiting, one malicious or misbehaving client can starve resources for everyone else:</p>
+
+        <div class="diagram-wrap">
+            <div class="mermaid">
+                %%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#f1f5f9', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#94a3b8', 'lineColor': '#2563eb', 'secondaryColor': '#f0fdf4', 'tertiaryColor': '#fef2f2', 'background': '#ffffff', 'mainBkg': '#f1f5f9', 'nodeBorder': '#94a3b8', 'clusterBkg': '#f8fafc', 'titleColor': '#0f172a', 'edgeLabelBackground': '#f8fafc'}}}%%
+                graph LR
+                A["🔴 Attacker\n10,000 req/sec"]:::danger --> B["⚙️ API Server"]:::server
+                C["🟢 Legitimate User\n10 req/sec"]:::safe --> B
+                B --> D["CPU: 100%"]:::impact
+                B --> E["Memory: Exhausted"]:::impact
+                B --> F["Requests Timeout"]:::impact
+                classDef danger fill:#3d1a1a,stroke:#f87171,color:#fca5a5
+                classDef safe   fill:#1a3d2a,stroke:#34d399,color:#6ee7b7
+                classDef server fill:#dbeafe,stroke:#3b82f6,color:#1e40af
+                classDef impact fill:#3d2a1a,stroke:#fbbf24,color:#fcd34d
+            </div>
+        </div>
+
+        <h3>Benefits</h3>
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Benefit</th><th>Impact</th></tr></thead>
+                <tbody>
+                <tr><td><strong>Availability</strong></td><td>Protects service from being overwhelmed by a single client</td></tr>
+                <tr><td><strong>Fair Usage</strong></td><td>Ensures all users get a fair share of API capacity</td></tr>
+                <tr><td><strong>Cost Control</strong></td><td>Prevents unexpected infrastructure bills from DDoS or runaway clients</td></tr>
+                <tr><td><strong>Security</strong></td><td>Mitigates brute-force attacks such as password guessing and token enumeration</td></tr>
+                <tr><td><strong>Compliance</strong></td><td>Helps enforce SLA commitments (e.g., paid tier = 500 req/hr, free = 100 req/hr)</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- ── Section 3 ──────────────────────────────────────── -->
+    <section id="algorithms">
+        <h2>Rate Limiting Algorithms</h2>
+
+        <!-- ── Token Bucket ─────────────────────────── -->
+        <div class="algo-section" id="token-bucket">
+            <h3>1. Token Bucket Algorithm</h3>
+            <p>The <strong>token bucket</strong> is the most popular algorithm, used by AWS API Gateway, Stripe, and GitHub. It models a bucket that fills with tokens over time.</p>
+
+            <h4>How It Works</h4>
+            <ol>
+                <li>A bucket has a fixed <strong>capacity</strong> (e.g., 100 tokens)</li>
+                <li>Tokens are <strong>refilled</strong> at a constant rate (e.g., 100 tokens per hour)</li>
+                <li>Each request <strong>consumes 1 token</strong></li>
+                <li>If the bucket has tokens, the request succeeds and one token is decremented</li>
+                <li>If the bucket is empty, the request is rejected until tokens refill</li>
+            </ol>
+
+            <h4>Visualized Over Time</h4>
+            <div class="diagram-wrap">
+                <div class="mermaid">
+                    %%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#dbeafe', 'primaryTextColor': '#1e40af', 'primaryBorderColor': '#3b82f6', 'lineColor': '#2563eb', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#dcfce7', 'background': '#ffffff', 'mainBkg': '#dbeafe', 'nodeBorder': '#3b82f6', 'clusterBkg': '#f8fafc', 'titleColor': '#1e40af', 'edgeLabelBackground': '#eff6ff'}}}%%
+                    graph TD
+                    A["⏱ Time: 0s\nBucket: 100 tokens"]:::full --> B["📨 Request 1\nConsumes 1 token"]:::req
+                    B --> C["Bucket: 99 tokens"]:::full
+                    C --> D["⏱ Time: 1800s (30 min)\nRefill: +50 tokens\nRate: 100/hour"]:::refill
+                    D --> E["Bucket: 149 → capped at 100"]:::full
+                    E --> F["📨 Request 2\nConsumes 1 token"]:::req
+                    F --> G["Bucket: 99 tokens"]:::full
+                    G --> H["⏱ Time: 3600s (1 hour)\nAll tokens refilled"]:::refill
+                    H --> I["Bucket: 100 tokens"]:::full
+                    classDef full   fill:#dbeafe,stroke:#3b82f6,color:#1e40af
+                    classDef req    fill:#1e3a5f,stroke:#60a5fa,color:#bfdbfe
+                    classDef refill fill:#1a3d2a,stroke:#34d399,color:#6ee7b7
+                </div>
+            </div>
+
+            <h4>Lifecycle Example</h4>
+            <div class="diagram-wrap">
+                <div class="mermaid">
+                    %%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#dbeafe', 'primaryTextColor': '#1e40af', 'primaryBorderColor': '#3b82f6', 'lineColor': '#2563eb', 'secondaryColor': '#f8fafc', 'background': '#ffffff', 'mainBkg': '#dbeafe', 'nodeBorder': '#3b82f6', 'labelBoxBkgColor': '#f8fafc', 'labelBoxBorderColor': '#e2e8f0', 'labelTextColor': '#1e293b', 'loopTextColor': '#1e293b', 'noteBkgColor': '#dcfce7', 'noteTextColor': '#166534', 'noteBorderColor': '#86efac', 'activationBkgColor': '#dbeafe', 'activationBorderColor': '#3b82f6', 'sequenceNumberColor': '#1e40af'}}}%%
+                    sequenceDiagram
+                    participant C as Client
+                    participant B as Token Bucket
+                    C->>B: Request 1
+                    B->>B: Consume 1 token (Tokens: 99)
+                    B->>C: 200 OK
+                    C->>B: Request 2
+                    B->>B: Consume 1 token (Tokens: 98)
+                    B->>C: 200 OK
+                    Note over B: 1800s (30 min) pass — Refill +50 tokens → capped at 100
+                    C->>B: Request 3
+                    B->>B: Consume 1 token (Tokens: 99)
+                    B->>C: 200 OK
+                    C->>B: 99 rapid requests
+                    B->>B: Consume 99 tokens → Tokens: 0
+                    B->>C: 200 OK (all 99 succeed)
+                    C->>B: 1 more request
+                    B->>B: Bucket empty — cannot consume
+                    B->>C: 429 Too Many Requests
+                </div>
+            </div>
+
+            <h4>Key Properties</h4>
+            <div class="prop-grid">
+                <div class="prop-card"><div class="label">Burst Capacity</div><div class="value">Yes — up to bucket size</div></div>
+                <div class="prop-card"><div class="label">Fairness</div><div class="value">Each client has own bucket</div></div>
+                <div class="prop-card"><div class="label">Refill Model</div><div class="value">Greedy (continuous)</div></div>
+                <div class="prop-card"><div class="label">Implementation</div><div class="value">Medium complexity</div></div>
+                <div class="prop-card"><div class="label">Distributed Cost</div><div class="value">Moderate — 1 integer/client</div></div>
+            </div>
+
+            <div class="pros-cons">
+                <div class="pros">
+                    <h5>Advantages</h5>
+                    <ul>
+                        <li>Allows controlled bursts — all 100 tokens usable at once if needed</li>
+                        <li>Smooth continuous refill — no cliff resets</li>
+                        <li>Simple mental model — bucket with a faucet</li>
+                        <li>Industry standard — proven at GitHub, AWS, Stripe</li>
+                    </ul>
+                </div>
+                <div class="cons">
+                    <h5>Disadvantages</h5>
+                    <ul>
+                        <li>Burst abuse — all tokens consumed immediately, starving later requests</li>
+                        <li>No downstream awareness — doesn't adapt if the backend is struggling</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── Leaky Bucket ──────────────────────────── -->
+        <div class="algo-section" id="leaky-bucket">
+            <h3>2. Leaky Bucket Algorithm</h3>
+            <p>The <strong>leaky bucket</strong> models a bucket with a hole in the bottom. Requests queue up and leak out at a constant rate regardless of how fast they arrive.</p>
+
+            <h4>How It Works</h4>
+            <ol>
+                <li>Requests are <strong>enqueued</strong> into a bucket with fixed capacity</li>
+                <li>Requests are <strong>processed</strong> at a constant rate (e.g., 2 req/sec)</li>
+                <li>If the bucket is full, new requests are rejected immediately</li>
+                <li>Otherwise, requests wait in line until the "leak" processes them</li>
+            </ol>
+
+            <h4>Visualized</h4>
+            <div class="diagram-wrap">
+                <div class="mermaid">
+                    %%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#dcfce7', 'primaryTextColor': '#166534', 'primaryBorderColor': '#22c55e', 'lineColor': '#16a34a', 'secondaryColor': '#eff6ff', 'tertiaryColor': '#fef9c3', 'background': '#ffffff', 'mainBkg': '#dcfce7', 'nodeBorder': '#22c55e', 'clusterBkg': '#f8fafc', 'titleColor': '#166534', 'edgeLabelBackground': '#f0fdf4'}}}%%
+                    graph TD
+                    A["📥 Incoming Requests\n100 req/sec"]:::input --> B["🪣 Bucket\nCapacity: 50"]:::bucket
+                    B --> C["📋 Queue\nFIFO Order"]:::queue
+                    C --> D["💧 Leak Rate\n2 req/sec"]:::leak
+                    D --> E["✅ Processed\nRequests"]:::done
+                    B -->|"Bucket full?"| F["❌ Rejected"]:::reject
+                    classDef input  fill:#1e3a5f,stroke:#60a5fa,color:#bfdbfe
+                    classDef bucket fill:#dbeafe,stroke:#3b82f6,color:#1e40af
+                    classDef queue  fill:#f1f5f9,stroke:#94a3b8,color:#475569
+                    classDef leak   fill:#1a3d2a,stroke:#34d399,color:#6ee7b7
+                    classDef done   fill:#1a3d2a,stroke:#34d399,color:#6ee7b7
+                    classDef reject fill:#3d1a1a,stroke:#f87171,color:#fca5a5
+                </div>
+            </div>
+
+            <h4>Example Timeline</h4>
+            <div class="diagram-wrap">
+                <div class="mermaid">
+                    %%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#dcfce7', 'primaryTextColor': '#166534', 'primaryBorderColor': '#22c55e', 'lineColor': '#16a34a', 'secondaryColor': '#f8fafc', 'background': '#ffffff', 'mainBkg': '#dcfce7', 'nodeBorder': '#22c55e', 'labelBoxBkgColor': '#f8fafc', 'labelBoxBorderColor': '#e2e8f0', 'labelTextColor': '#1e293b', 'noteBkgColor': '#fef9c3', 'noteTextColor': '#854d0e', 'noteBorderColor': '#fde047', 'activationBkgColor': '#dcfce7', 'activationBorderColor': '#22c55e'}}}%%
+                    sequenceDiagram
+                    participant Req as Requests
+                    participant Leak as Leaky Bucket
+                    participant API as Backend API
+                    Req->>Leak: 10 requests arrive (t=0)
+                    Leak->>Leak: Queue: 10 (all accepted)
+                    Req->>Leak: 5 requests arrive (t=0.5s)
+                    Leak->>Leak: Queue: 15 (all accepted)
+                    Leak->>API: Process 1 req (leak=2/sec) at t=0.5s
+                    Leak->>Leak: Queue: 14
+                    Leak->>API: Process 1 req at t=1s
+                    Leak->>Leak: Queue: 13
+                    Req->>Leak: 50 requests arrive (t=1s)
+                    Leak->>Leak: Capacity 50 — only 37 slots free (50-13=37)
+                    Leak->>Req: 13 requests REJECTED (bucket full)
+                    Note over Leak: Queue: 50 (full) — draining at 2/sec
+                    Leak->>API: Continue processing at 2/sec
+                </div>
+            </div>
+
+            <h4>Key Properties</h4>
+            <div class="prop-grid">
+                <div class="prop-card"><div class="label">Burst Capacity</div><div class="value">No — constant output rate</div></div>
+                <div class="prop-card"><div class="label">Fairness</div><div class="value">FIFO arrival order</div></div>
+                <div class="prop-card"><div class="label">Refill Model</div><div class="value">Fixed output rate (leak)</div></div>
+                <div class="prop-card"><div class="label">Implementation</div><div class="value">High — queue + worker</div></div>
+                <div class="prop-card"><div class="label">Distributed Cost</div><div class="value">High — full queue sync</div></div>
+            </div>
+
+            <div class="pros-cons">
+                <div class="pros">
+                    <h5>Advantages</h5>
+                    <ul>
+                        <li>Prevents bursts — output is always smooth and predictable</li>
+                        <li>Predictable latency — queueing discipline is known</li>
+                        <li>Fair FIFO processing — prevents starvation</li>
+                    </ul>
+                </div>
+                <div class="cons">
+                    <h5>Disadvantages</h5>
+                    <ul>
+                        <li>Complex to implement — needs queue management and background worker</li>
+                        <li>High state overhead — queue grows as requests pile up</li>
+                        <li>Not ideal for HTTP APIs — clients may timeout in queue</li>
+                        <li>Hard to distribute — queue state must be synchronized</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── Sliding Window ────────────────────────── -->
+        <div class="algo-section" id="sliding-window">
+            <h3>3. Sliding Window Counter Algorithm</h3>
+            <p>The <strong>sliding window</strong> counts requests in a moving time window that trails behind the current moment. Old requests slide out one by one as time passes.</p>
+
+            <h4>How It Works</h4>
+            <ol>
+                <li>Define a <strong>time window</strong> (e.g., 1 hour trailing)</li>
+                <li>Count all requests <strong>within</strong> the current window <code>[now - 3600s, now]</code></li>
+                <li>If count ≥ limit, reject; otherwise accept</li>
+                <li>As time progresses, old requests <strong>slide out</strong> of the window one by one</li>
+            </ol>
+
+            <h4>Visualized</h4>
+            <div class="diagram-wrap">
+                <div class="mermaid">
+                    %%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#ccfbf1', 'primaryTextColor': '#115e59', 'primaryBorderColor': '#14b8a6', 'lineColor': '#0d9488', 'secondaryColor': '#dbeafe', 'tertiaryColor': '#dbeafe', 'background': '#ffffff', 'mainBkg': '#ccfbf1', 'nodeBorder': '#14b8a6', 'clusterBkg': '#f0fdfa', 'titleColor': '#0f766e', 'edgeLabelBackground': '#f0fdfa', 'clusterBorder': '#5eead4'}}}%%
+                    graph LR
+                    subgraph W1["Window at t=0:20 — covers 0:00 to 0:20"]
+                    R1["Req @ 0:05"]
+                    R2["Req @ 0:10"]
+                    R3["Req @ 0:15"]
+                    R4["Req @ 0:20"]
+                    end
+                    subgraph W2["Window at t=1:06 — covers 0:06 to 1:06"]
+                    R2b["Req @ 0:10 (inside)"]
+                    R3b["Req @ 0:15 (inside)"]
+                    R4b["Req @ 0:20 (inside)"]
+                    R5["Req @ 1:06 (new)"]
+                    end
+                    W1 -->|"t=1:06 — Req @ 0:05 slides out\nWindow shifts forward"| W2
+                </div>
+            </div>
+
+            <h4>Example Timeline</h4>
+            <div class="diagram-wrap">
+                <div class="mermaid">
+                    %%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#ccfbf1', 'primaryTextColor': '#115e59', 'primaryBorderColor': '#14b8a6', 'lineColor': '#0d9488', 'secondaryColor': '#f8fafc', 'background': '#ffffff', 'mainBkg': '#ccfbf1', 'nodeBorder': '#14b8a6', 'labelBoxBkgColor': '#f8fafc', 'labelBoxBorderColor': '#e2e8f0', 'labelTextColor': '#1e293b', 'noteBkgColor': '#dbeafe', 'noteTextColor': '#1e40af', 'noteBorderColor': '#93c5fd', 'activationBkgColor': '#ccfbf1', 'activationBorderColor': '#14b8a6'}}}%%
+                    sequenceDiagram
+                    participant C as Client
+                    participant SW as Sliding Window
+                    Note over SW: Window: [t-3600, t] trailing 1 hour — Limit: 10
+                    C->>SW: Request @ t=100s — Window=[0,100] Count=1
+                    SW->>C: 200 OK
+                    C->>SW: Request @ t=200s — Window=[0,200] Count=2
+                    SW->>C: 200 OK
+                    Note over SW: 8 more requests up to t=1000s — count=10
+                    C->>SW: Request @ t=1000s — Window=[0,1000] Count=10
+                    SW->>C: 200 OK
+                    C->>SW: Request @ t=1001s — Count=10 (limit reached)
+                    SW->>C: 429 Too Many Requests
+                    Note over SW: t=3701s: window=[101,3701]\nReq @ t=100s slides out → count drops to 9
+                    C->>SW: Request @ t=3701s — Count=10 (9 old + 1 new)
+                    SW->>C: 200 OK
+                    Note over SW: Requests slide out one by one\nas each ages past 3600s — count falls gradually to 0
+                </div>
+            </div>
+
+            <h4>Key Properties</h4>
+            <div class="prop-grid">
+                <div class="prop-card"><div class="label">Burst Capacity</div><div class="value">Possible at boundaries</div></div>
+                <div class="prop-card"><div class="label">Fairness</div><div class="value">Fair within the window</div></div>
+                <div class="prop-card"><div class="label">Refill Model</div><div class="value">Gradual — requests slide out</div></div>
+                <div class="prop-card"><div class="label">Implementation</div><div class="value">Low-Medium — track timestamps</div></div>
+                <div class="prop-card"><div class="label">Distributed Cost</div><div class="value">Low — list of timestamps</div></div>
+            </div>
+
+            <div class="pros-cons">
+                <div class="pros">
+                    <h5>Advantages</h5>
+                    <ul>
+                        <li>Simple to understand — count requests within a moving window</li>
+                        <li>Low memory — only store recent request timestamps</li>
+                        <li>Accurate — hard limit enforced within the exact window</li>
+                    </ul>
+                </div>
+                <div class="cons">
+                    <h5>Disadvantages</h5>
+                    <ul>
+                        <li>Cliff effect — limit resets abruptly when the window expires entirely</li>
+                        <li>Burst at boundaries — two full limits are possible in twice the window time</li>
+                        <li>Timestamp overhead — every request timestamp must be stored</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── Fixed Window ──────────────────────────── -->
+        <div class="algo-section" id="fixed-window">
+            <h3>4. Fixed Window Counter Algorithm</h3>
+            <p>The <strong>fixed window</strong> is the simplest approach: divide time into fixed buckets and count requests per bucket. When the interval boundary passes, the counter resets to zero.</p>
+
+            <h4>How It Works</h4>
+            <ol>
+                <li>Divide time into <strong>fixed intervals</strong> (e.g., 1-hour buckets)</li>
+                <li>Count requests in the <strong>current interval</strong></li>
+                <li>If count ≥ limit, reject; otherwise accept</li>
+                <li>When the interval boundary passes, <strong>reset counter</strong> to 0</li>
+            </ol>
+
+            <h4>Visualized</h4>
+            <div class="diagram-wrap">
+                <div class="mermaid">
+                    %%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#fef3c7', 'primaryTextColor': '#92400e', 'primaryBorderColor': '#f59e0b', 'lineColor': '#d97706', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f1f5f9', 'background': '#ffffff', 'mainBkg': '#fef3c7', 'nodeBorder': '#f59e0b', 'clusterBkg': '#fffbeb', 'titleColor': '#78350f', 'edgeLabelBackground': '#fffbeb', 'clusterBorder': '#fcd34d'}}}%%
+                    graph LR
+                    A["Hour 1\n0:00-1:00\nCount: 0/100"] --> B["Hour 2\n1:00-2:00\nCount: 0/100"]
+                    B --> C["Hour 3\n2:00-3:00\nCount: 0/100"]
+                    subgraph W1 ["Hour 1 Requests"]
+                    D["Req 1 @ 0:05\nCount: 1"]
+                    E["Req 2 @ 0:30\nCount: 2"]
+                    F["Req 3 @ 0:59\nCount: 3"]
+                    end
+                    subgraph W2 ["Hour 2 Requests"]
+                    G["Req 4 @ 1:00\nCount: 1"]
+                    H["Req 5 @ 1:30\nCount: 2"]
+                    end
+                    A --> W1
+                    B --> W2
+                </div>
+            </div>
+
+            <h4>Example Timeline</h4>
+            <div class="diagram-wrap">
+                <div class="mermaid">
+                    %%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#fef3c7', 'primaryTextColor': '#92400e', 'primaryBorderColor': '#f59e0b', 'lineColor': '#d97706', 'secondaryColor': '#f8fafc', 'background': '#ffffff', 'mainBkg': '#fef3c7', 'nodeBorder': '#f59e0b', 'labelBoxBkgColor': '#f8fafc', 'labelBoxBorderColor': '#e2e8f0', 'labelTextColor': '#1e293b', 'noteBkgColor': '#fef3c7', 'noteTextColor': '#92400e', 'noteBorderColor': '#fcd34d', 'activationBkgColor': '#fef3c7', 'activationBorderColor': '#f59e0b'}}}%%
+                    sequenceDiagram
+                    participant C as Client
+                    participant FW as Fixed Window
+                    Note over FW: Window: [0:00-1:00) — Limit: 100 — Count: 0
+                    C->>FW: Request @ 0:10 — Count=1
+                    FW->>C: 200 OK
+                    C->>FW: Request @ 0:30 — Count=2
+                    FW->>C: 200 OK
+                    Note over FW: 98 more requests by 0:59 — Count=100
+                    C->>FW: Request @ 0:59 — Count=100 (limit reached)
+                    FW->>C: 429 Too Many Requests
+                    Note over FW: Boundary: 1:00 arrives — reset Count=0
+                    C->>FW: Request @ 1:00 — Count=1
+                    FW->>C: 200 OK
+                </div>
+            </div>
+
+            <div class="callout warn">
+                <span class="callout-icon">⚠️</span>
+                <div>
+                    <strong>Double-spend at boundaries:</strong> A user can exhaust the full limit at 0:59:59 and again at 1:00:00 — consuming 200 requests in under 2 seconds despite a 100 req/hour limit.
+                </div>
+            </div>
+
+            <h4>Key Properties</h4>
+            <div class="prop-grid">
+                <div class="prop-card"><div class="label">Burst Capacity</div><div class="value">High at boundaries (2x)</div></div>
+                <div class="prop-card"><div class="label">Fairness</div><div class="value">Fair within interval</div></div>
+                <div class="prop-card"><div class="label">Refill Model</div><div class="value">Hard reset at boundary</div></div>
+                <div class="prop-card"><div class="label">Implementation</div><div class="value">Very Low — 1 counter</div></div>
+                <div class="prop-card"><div class="label">Distributed Cost</div><div class="value">Minimal — 1 value</div></div>
+            </div>
+
+            <div class="pros-cons">
+                <div class="pros">
+                    <h5>Advantages</h5>
+                    <ul>
+                        <li>Trivial to implement — one counter and a reset time</li>
+                        <li>Minimal state — single integer per client</li>
+                        <li>Very fast — lookup and update in O(1)</li>
+                    </ul>
+                </div>
+                <div class="cons">
+                    <h5>Disadvantages</h5>
+                    <ul>
+                        <li>Cliff effect — abrupt reset at every boundary</li>
+                        <li>Double-spend — 2x the limit is consumable across boundaries</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ── Section 4: Comparison ─────────────────────────── -->
+    <section id="comparison">
+        <h2>Algorithm Comparison</h2>
+
+        <div class="diagram-wrap">
+            <div class="mermaid">
+                %%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#f1f5f9', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#94a3b8', 'lineColor': '#2563eb', 'secondaryColor': '#dbeafe', 'tertiaryColor': '#dcfce7', 'background': '#ffffff', 'mainBkg': '#f1f5f9', 'nodeBorder': '#94a3b8', 'clusterBkg': '#f8fafc', 'titleColor': '#0f172a', 'edgeLabelBackground': '#f8fafc'}}}%%
+                graph TD
+                A["Choose a Rate Limiting Algorithm"]:::root --> B{What is your priority?}:::decision
+                B -->|"Bursts OK\nSimple"| C["Token Bucket"]:::token
+                B -->|"Smooth output\nFIFO fairness"| D["Leaky Bucket"]:::leaky
+                B -->|"Accurate window\nLow memory"| E["Sliding Window"]:::sliding
+                B -->|"Minimal state\nVery simple"| F["Fixed Window"]:::fixed
+                C --> C1["Stripe, AWS,\nGitHub use this"]:::note
+                D --> D1["Complex to\ndistribute"]:::note
+                E --> E1["Accurate,\nmoderate cost"]:::note
+                F --> F1["Cliff effect\nat boundaries"]:::warn
+                classDef root    fill:#1e40af,stroke:#1d4ed8,color:#ffffff,font-weight:bold
+                classDef decision fill:#f1f5f9,stroke:#94a3b8,color:#1e293b
+                classDef token   fill:#dbeafe,stroke:#3b82f6,color:#1e40af
+                classDef leaky   fill:#1a3d2a,stroke:#34d399,color:#6ee7b7
+                classDef sliding fill:#1e3a5f,stroke:#60a5fa,color:#bfdbfe
+                classDef fixed   fill:#3d2a1a,stroke:#fbbf24,color:#fcd34d
+                classDef note    fill:#f8fafc,stroke:#cbd5e1,color:#64748b
+                classDef warn    fill:#3d1a1a,stroke:#f87171,color:#fca5a5
+            </div>
+        </div>
+
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr><th>Algorithm</th><th>Complexity</th><th>Accuracy</th><th>Burst</th><th>Distributed</th><th>Best For</th></tr>
+                </thead>
+                <tbody>
+                <tr><td><strong>Token Bucket</strong></td><td>Medium</td><td>High</td><td>Yes</td><td>Easy</td><td>General-purpose APIs</td></tr>
+                <tr><td><strong>Leaky Bucket</strong></td><td>High</td><td>Very High</td><td>No</td><td>Hard</td><td>Real-time, video streaming</td></tr>
+                <tr><td><strong>Sliding Window</strong></td><td>Medium</td><td>Very High</td><td>No</td><td>Medium</td><td>Payment APIs, analytics</td></tr>
+                <tr><td><strong>Fixed Window</strong></td><td>Low</td><td>Medium</td><td>High (boundary)</td><td>Very Easy</td><td>Simple services, prototyping</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- ── Section 5: Real-World ──────────────────────────── -->
+    <section id="real-world">
+        <h2>Real-World Examples</h2>
+
+        <div class="example-card">
+            <div class="badge token">Token Bucket</div>
+            <h4>GitHub API Rate Limits</h4>
+            <ul>
+                <li><strong>Unauthenticated:</strong> 60 requests/hour</li>
+                <li><strong>Authenticated:</strong> 5,000 requests/hour per user</li>
+                <li><strong>Premium:</strong> Unlimited</li>
+            </ul>
+            <p style="margin-top:0.75rem">Each request consumes 1 token. The bucket refills continuously over the hour.</p>
+            <p><strong>Why token bucket?</strong> Power users can burst all 5,000 requests at once when needed. The smooth refill prevents cliff effects that would frustrate developers, and each user has their own separate bucket making it fair.</p>
+        </div>
+
+        <div class="example-card">
+            <div class="badge sliding">Sliding Window</div>
+            <h4>Payment Gateway (Stripe)</h4>
+            <ul>
+                <li>Track requests in a <strong>moving 1-second window</strong></li>
+                <li>Limit: 100 requests/second per API key</li>
+            </ul>
+            <p style="margin-top:0.75rem"><strong>Why sliding window?</strong> Payments require precision timing — a fixed window reset could produce a burst that causes double-charges or race conditions. High accuracy is required to maintain compliance and trust.</p>
+        </div>
+
+        <div class="example-card">
+            <div class="badge leaky">Leaky Bucket</div>
+            <h4>CDN Traffic Shaping</h4>
+            <ul>
+                <li>Incoming requests are queued</li>
+                <li>Egress bandwidth is constant (e.g., 1 Mbps per client)</li>
+            </ul>
+            <p style="margin-top:0.75rem"><strong>Why leaky bucket?</strong> Traffic spikes must not overwhelm the origin server. A smooth, constant output rate makes infrastructure planning predictable and keeps origin connection pools manageable.</p>
+        </div>
+
+        <div class="example-card">
+            <div class="badge fixed">Fixed Window</div>
+            <h4>DDoS Mitigation</h4>
+            <ul>
+                <li>Track requests per IP per minute</li>
+                <li>Block if more than 10,000 requests/minute</li>
+            </ul>
+            <p style="margin-top:0.75rem"><strong>Why fixed window?</strong> In an emergency deployment, speed and simplicity matter. The double-spend boundary issue is an acceptable trade-off because DDoS protection is already an imperfect defense at this layer.</p>
+        </div>
+    </section>
+
+    <!-- ── Section 6: Distributed ─────────────────────────── -->
+    <section id="distributed">
+        <h2>Distributed Rate Limiting</h2>
+        <p>When you have <strong>multiple servers</strong>, a single in-memory bucket on each server is not sufficient. Each server maintains its own counter, which means a client can exceed the limit by hitting different servers.</p>
+
+        <h3>The Problem</h3>
+        <div class="diagram-wrap">
+            <div class="mermaid">
+                %%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#fee2e2', 'primaryTextColor': '#991b1b', 'primaryBorderColor': '#f87171', 'lineColor': '#dc2626', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#f1f5f9', 'background': '#ffffff', 'mainBkg': '#fee2e2', 'nodeBorder': '#f87171', 'clusterBkg': '#fef2f2', 'titleColor': '#7f1d1d', 'edgeLabelBackground': '#fef2f2'}}}%%
+                graph TB
+                Client["Client\nIP: 1.2.3.4"]:::client --> LB["Load Balancer"]:::lb
+                LB --> S1["Server A\nIn-memory: 99 tokens"]:::server
+                LB --> S2["Server B\nIn-memory: 99 tokens"]:::server
+                S1 --> R1["Request 1 accepted\nServer A: 99 tokens left"]:::accept
+                S2 --> R2["Request 2 accepted\nServer B: 99 tokens left"]:::accept
+                R1 --> P["Both passed — but combined\nexceeds the intended limit"]:::problem
+                R2 --> P
+                classDef client  fill:#1e3a5f,stroke:#60a5fa,color:#bfdbfe
+                classDef lb      fill:#f1f5f9,stroke:#94a3b8,color:#1e293b
+                classDef server  fill:#3d1a1a,stroke:#f87171,color:#fca5a5
+                classDef accept  fill:#1a3d2a,stroke:#34d399,color:#6ee7b7
+                classDef problem fill:#3d1a1a,stroke:#f87171,color:#fca5a5,font-weight:bold
+            </div>
+        </div>
+
+        <h3>Solution: Centralized State Store</h3>
+        <div class="diagram-wrap">
+            <div class="mermaid">
+                %%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#dbeafe', 'primaryTextColor': '#1e40af', 'primaryBorderColor': '#3b82f6', 'lineColor': '#2563eb', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#dcfce7', 'background': '#ffffff', 'mainBkg': '#dbeafe', 'nodeBorder': '#3b82f6', 'clusterBkg': '#f8fafc', 'titleColor': '#1e40af', 'edgeLabelBackground': '#eff6ff'}}}%%
+                graph TB
+                C["Client"]:::client --> LB["Load Balancer"]:::lb
+                LB --> S1["Server A"]:::server
+                LB --> S2["Server B"]:::server
+                S1 -->|"Check bucket"| Redis["Redis\nrate_limit:client_id = 99"]:::redis
+                S2 -->|"Check bucket"| Redis
+                Redis -->|"Token available"| S1
+                Redis -->|"No tokens left"| S2
+                S1 -->|"Consume 1 — 200 OK"| C
+                S2 -->|"Blocked — 429"| C
+                classDef client fill:#1e3a5f,stroke:#60a5fa,color:#bfdbfe
+                classDef lb     fill:#f1f5f9,stroke:#94a3b8,color:#1e293b
+                classDef server fill:#dbeafe,stroke:#3b82f6,color:#1e40af
+                classDef redis  fill:#3d1a1a,stroke:#f87171,color:#fca5a5
+            </div>
+        </div>
+
+        <p>Each server performs an <strong>atomic compare-and-swap (CAS)</strong> Lua script in Redis:</p>
+        <ol>
+            <li>Read current token count</li>
+            <li>If count &gt; 0: decrement and confirm — request proceeds</li>
+            <li>If count = 0: abort — return 429</li>
+        </ol>
+        <p>Only one CAS operation can complete at a time per key, keeping state consistent across all servers.</p>
+
+        <h3>Trade-off: Latency</h3>
+        <div class="diagram-wrap">
+            <div class="mermaid">
+                %%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#dcfce7', 'primaryTextColor': '#166534', 'primaryBorderColor': '#22c55e', 'lineColor': '#16a34a', 'secondaryColor': '#fef3c7', 'tertiaryColor': '#fef3c7', 'background': '#ffffff', 'mainBkg': '#f1f5f9', 'nodeBorder': '#94a3b8', 'clusterBkg': '#f8fafc', 'titleColor': '#0f172a', 'edgeLabelBackground': '#f8fafc'}}}%%
+                graph LR
+                A["In-Memory\nBucket"]:::mem -->|"&lt; 1 microsecond"| B["Accept / Reject"]:::result
+                C["Redis\nBucket"]:::redis -->|"1–5 milliseconds"| D["Accept / Reject"]:::result
+                classDef mem   fill:#1a3d2a,stroke:#34d399,color:#6ee7b7
+                classDef redis fill:#3d2a1a,stroke:#fbbf24,color:#fcd34d
+                classDef result fill:#f1f5f9,stroke:#94a3b8,color:#1e293b
+            </div>
+        </div>
+
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Scenario</th><th>Approach</th></tr></thead>
+                <tbody>
+                <tr><td>Single server, &lt; 1,000 req/s</td><td>In-memory bucket</td></tr>
+                <tr><td>Multiple servers, &lt; 10,000 req/s</td><td>Redis with TTL</td></tr>
+                <tr><td>Multiple regions</td><td>Geo-replicated Redis + eventual consistency</td></tr>
+                <tr><td>Ultra-low latency required</td><td>In-memory with async sync to Redis</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- ── Section 7: Trade-offs ──────────────────────────── -->
+    <section id="tradeoffs">
+        <h2>Trade-offs and Considerations</h2>
+
+        <h3>1. Burst vs. Smoothness</h3>
+        <div class="diagram-wrap">
+            <div class="mermaid">
+                %%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#dbeafe', 'primaryTextColor': '#1e40af', 'primaryBorderColor': '#3b82f6', 'lineColor': '#2563eb', 'secondaryColor': '#dcfce7', 'background': '#ffffff', 'mainBkg': '#f1f5f9', 'nodeBorder': '#94a3b8', 'edgeLabelBackground': '#f8fafc'}}}%%
+                graph LR
+                A["Token Bucket\n100 req/hour"]:::token --> B["Burst: All 100\nin 1 minute"]:::burst
+                C["Leaky Bucket\n100 req/hour"]:::leaky --> D["Smooth: ~1.67\nrequests/minute"]:::smooth
+                classDef token fill:#dbeafe,stroke:#3b82f6,color:#1e40af
+                classDef leaky fill:#1a3d2a,stroke:#34d399,color:#6ee7b7
+                classDef burst fill:#3d1a1a,stroke:#f87171,color:#fca5a5
+                classDef smooth fill:#1e3a5f,stroke:#60a5fa,color:#bfdbfe
+            </div>
+        </div>
+        <ul>
+            <li><strong>Bursty traffic</strong> (job queues, batch APIs): Token bucket handles unpredictable bursts gracefully.</li>
+            <li><strong>Smooth traffic</strong> (sensor data, streaming): Leaky bucket enforces a consistent rate.</li>
+        </ul>
+
+        <h3>2. Accuracy vs. Simplicity</h3>
+        <div class="diagram-wrap">
+            <div class="mermaid">
+                %%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#f1f5f9', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#94a3b8', 'lineColor': '#2563eb', 'secondaryColor': '#dbeafe', 'tertiaryColor': '#fef3c7', 'background': '#ffffff', 'mainBkg': '#f1f5f9', 'nodeBorder': '#94a3b8', 'edgeLabelBackground': '#f8fafc'}}}%%
+                graph TD
+                A["Algorithm"]:::root --> B{Accuracy required?}:::dec
+                B -->|High| C["Sliding Window\nor Leaky Bucket"]:::high
+                B -->|Medium| D["Token Bucket"]:::med
+                B -->|Low| E["Fixed Window"]:::low
+                classDef root fill:#f1f5f9,stroke:#94a3b8,color:#1e293b
+                classDef dec  fill:#f8fafc,stroke:#94a3b8,color:#1e293b
+                classDef high fill:#1e3a5f,stroke:#60a5fa,color:#bfdbfe
+                classDef med  fill:#dbeafe,stroke:#3b82f6,color:#1e40af
+                classDef low  fill:#3d2a1a,stroke:#fbbf24,color:#fcd34d
+            </div>
+        </div>
+        <ul>
+            <li>Payment systems use sliding window for high accuracy requirements.</li>
+            <li>General APIs use token bucket for a balance of simplicity and fairness.</li>
+            <li>DDoS protection uses fixed window for speed and minimal overhead.</li>
+        </ul>
+
+        <h3>3. Response Behavior</h3>
+        <p>When a rate limit is exceeded, APIs typically respond with:</p>
+
+        <div class="http-block">
+            <span class="status">HTTP 429 Too Many Requests</span><br/><br/>
+            {<br/>
+            &nbsp;&nbsp;<span class="key">"error"</span>: <span class="value">"Too Many Requests"</span>,<br/>
+            &nbsp;&nbsp;<span class="key">"message"</span>: <span class="value">"Rate limit exceeded"</span>,<br/>
+            &nbsp;&nbsp;<span class="key">"retry_after"</span>: <span class="value">3600</span><br/>
+            }<br/><br/>
+            <span class="header-key">X-RateLimit-Limit</span>: 100<br/>
+            <span class="header-key">X-RateLimit-Remaining</span>: 0<br/>
+            <span class="header-key">X-RateLimit-Reset</span>: 1704067200<br/>
+            <span class="header-key">Retry-After</span>: 3600
+        </div>
+
+        <ul>
+            <li><code>Retry-After</code> — tells the client how many seconds to wait before retrying</li>
+            <li><code>X-RateLimit-Remaining</code> — shows how many tokens remain in the current window</li>
+            <li><code>X-RateLimit-Reset</code> — Unix timestamp when the next refill occurs</li>
+        </ul>
+    </section>
+
+    <!-- ── Section 8: Summary ─────────────────────────────── -->
+    <section id="summary">
+        <h2>Summary</h2>
+
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr><th>Aspect</th><th>Token Bucket</th><th>Leaky Bucket</th><th>Sliding Window</th><th>Fixed Window</th></tr>
+                </thead>
+                <tbody>
+                <tr><td><strong>Complexity</strong></td><td>Medium</td><td>High</td><td>Medium</td><td>Low</td></tr>
+                <tr><td><strong>Burst Tolerance</strong></td><td>Yes</td><td>No</td><td>No</td><td>Yes (boundary)</td></tr>
+                <tr><td><strong>Accuracy</strong></td><td>High</td><td>Very High</td><td>Very High</td><td>Medium</td></tr>
+                <tr><td><strong>Distributed Cost</strong></td><td>Low</td><td>High</td><td>Medium</td><td>Very Low</td></tr>
+                <tr><td><strong>Common Use Case</strong></td><td>APIs</td><td>Real-time</td><td>Payments</td><td>DDoS</td></tr>
+                <tr><td><strong>Industry Adoption</strong></td><td>Very High</td><td>Low</td><td>High</td><td>Medium</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="callout info">
+            <span class="callout-icon">💡</span>
+            <span><strong>Recommendation:</strong> Start with <strong>token bucket</strong> — it provides the best balance of simplicity, accuracy, and burst tolerance. Evaluate <strong>sliding window</strong> if strict accuracy is required (payments), or <strong>fixed window</strong> if minimal implementation effort is the priority.</span>
+        </div>
+    </section>
+
+    <!-- ── References ─────────────────────────────────────── -->
+    <section id="references">
+        <h2>References</h2>
+        <ul class="ref-list">
+            <li><a href="https://stripe.com/en-in/blog/rate-limiters" target="_blank">Stripe Engineering — Rate Limiters</a></li>
+            <li><a href="https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-request-throttling.html" target="_blank">AWS API Gateway — Request Throttling</a></li>
+            <li><a href="https://github.com/vladimir-bukhtoyarov/bucket4j" target="_blank">Bucket4j — Java Rate Limiting Library</a></li>
+            <li><a href="https://cloud.google.com/architecture/rate-limiting-strategies-techniques" target="_blank">Google Cloud — Rate Limiting Strategies</a></li>
+        </ul>
+    </section>
+
+</main>
+
+<script>
+    // ── Mermaid Init ──────────────────────────────────────────
+    mermaid.initialize({
+        startOnLoad: true,
+        securityLevel: 'loose',
+        fontFamily: 'Inter, Segoe UI, system-ui, sans-serif',
+        fontSize: 14,
+    });
+
+    // ── Arrow Animation ───────────────────────────────────────
+    // After Mermaid finishes rendering, animate all flowchart edges
+    function animateEdges() {
+        document.querySelectorAll('.edgePath path, .flowchart-link').forEach(path => {
+            try {
+                const length = path.getTotalLength();
+                path.style.strokeDasharray = length;
+                path.style.strokeDashoffset = length;
+                path.style.transition = 'none';
+                path.classList.add('animated-edge');
+            } catch (e) {
+                // path may not support getTotalLength (e.g. sequence diagrams)
+            }
+        });
+    }
+
+    // Mermaid 10 fires a custom event when rendering is done
+    document.addEventListener('DOMContentLoaded', () => {
+        // Give Mermaid time to render then animate
+        setTimeout(animateEdges, 800);
+    });
+
+    // Re-animate on scroll into view using IntersectionObserver
+    const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                const paths = entry.target.querySelectorAll('.edgePath path, .flowchart-link');
+                paths.forEach(path => {
+                    try {
+                        const length = path.getTotalLength();
+                        path.style.strokeDasharray = length;
+                        path.style.strokeDashoffset = length;
+                        // Remove and re-add class to restart animation
+                        path.classList.remove('animated-edge');
+                        void path.offsetWidth; // force reflow
+                        path.classList.add('animated-edge');
+                    } catch (e) {}
+                });
+            }
+        });
+    }, { threshold: 0.2 });
+
+    document.querySelectorAll('.diagram-wrap').forEach(el => observer.observe(el));
+
+    // ── Active TOC link on scroll ─────────────────────────────
+    const sections = document.querySelectorAll('section[id], div.algo-section[id]');
+    const tocLinks = document.querySelectorAll('#toc a');
+
+    window.addEventListener('scroll', () => {
+        let current = '';
+        sections.forEach(section => {
+            const top = section.getBoundingClientRect().top;
+            if (top <= 120) current = section.id;
+        });
+        tocLinks.forEach(link => {
+            link.classList.remove('active');
+            if (link.getAttribute('href') === '#' + current) {
+                link.classList.add('active');
+            }
+        });
+    });
+</script>
+</body>
+</html>

@@ -38,3 +38,10 @@ build/
 *.db
 *.sqlite
 uploads/
+plans/
+
+#Env
+.env
+
+#Logs
+logs/
