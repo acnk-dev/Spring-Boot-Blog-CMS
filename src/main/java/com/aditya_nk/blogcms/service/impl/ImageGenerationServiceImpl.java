@@ -32,7 +32,7 @@ import java.util.UUID;
 public class ImageGenerationServiceImpl implements ImageGenerationService {
 
     private static final String GEMINI_IMAGE_URL =
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent";
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent";
     private static final String PLACEHOLDER_URL = "/images/placeholder-featured.png";
 
     private final ImagePromptAgent imagePromptAgent;
