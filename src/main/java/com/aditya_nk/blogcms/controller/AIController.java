@@ -2,12 +2,14 @@ package com.aditya_nk.blogcms.controller;
 
 import com.aditya_nk.blogcms.dto.ai.*;
 import com.aditya_nk.blogcms.entity.User;
+import com.aditya_nk.blogcms.service.AIJobService;
 import com.aditya_nk.blogcms.service.AIService;
 import com.aditya_nk.blogcms.service.AIUsageService;
 import com.aditya_nk.blogcms.service.ImageGenerationService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
@@ -26,6 +28,7 @@ public class AIController {
     private final AIService aiService;
     private final AIUsageService aiUsageService;
     private final ImageGenerationService imageGenerationService;
+    private final AIJobService aiJobService;
 
     @GetMapping("/test")
     @PreAuthorize("hasRole('ADMIN')")
@@ -72,13 +75,14 @@ public class AIController {
 
     @PostMapping("/excerpt")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Map<String, String>> generateExcerpt(
+    public ResponseEntity<AIJobResponse> generateExcerpt(
             @Valid @RequestBody ExcerptRequest request) {
 
         User user = currentUser();
         aiUsageService.checkAndIncrementUsage(user.getId(), user.getRole());
 
-        return ResponseEntity.ok(Map.of("excerpt", aiService.generateExcerpt(request)));
+        AIJobResponse response = aiJobService.dispatchExcerptJob(request, user.getId());
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
     }
 
     @PostMapping("/suggest-tags")
