@@ -3,6 +3,7 @@ package com.aditya_nk.blogcms.service;
 import com.aditya_nk.blogcms.dto.ai.AIJobResponse;
 import com.aditya_nk.blogcms.dto.ai.AIJobStatusResponse;
 import com.aditya_nk.blogcms.dto.ai.ExcerptRequest;
+import com.aditya_nk.blogcms.dto.ai.TagSuggestionRequest;
 
 public interface AIJobService {
 
@@ -11,6 +12,12 @@ public interface AIJobService {
      * service, and returns immediately — does not wait for generation.
      */
     AIJobResponse dispatchExcerptJob(ExcerptRequest request, Long userId);
+
+    /**
+     * Same pattern as dispatchExcerptJob — tag suggestion is also
+     * category-agnostic, so no category-resolution step is needed here.
+     */
+    AIJobResponse dispatchSuggestTagsJob(TagSuggestionRequest request, Long userId);
 
     /**
      * Reads job status: Redis first (fast path while PENDING), falling

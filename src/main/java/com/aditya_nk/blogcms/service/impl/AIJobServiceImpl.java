@@ -4,9 +4,12 @@ import com.aditya_nk.blogcms.client.AIServiceClient;
 import com.aditya_nk.blogcms.dto.ai.AIJobExcerptRequest;
 import com.aditya_nk.blogcms.dto.ai.AIJobResponse;
 import com.aditya_nk.blogcms.dto.ai.AIJobStatusResponse;
+import com.aditya_nk.blogcms.dto.ai.AIJobSuggestTagsRequest;
 import com.aditya_nk.blogcms.dto.ai.ExcerptRequest;
+import com.aditya_nk.blogcms.dto.ai.TagSuggestionRequest;
 import com.aditya_nk.blogcms.entity.AIJob;
 import com.aditya_nk.blogcms.exception.ResourceNotFoundException;
+import com.aditya_nk.blogcms.mapper.AIJobStatusMapper;
 import com.aditya_nk.blogcms.repository.AIJobRepository;
 import com.aditya_nk.blogcms.service.AIJobService;
 import lombok.RequiredArgsConstructor;
@@ -29,6 +32,7 @@ public class AIJobServiceImpl implements AIJobService {
     private final AIServiceClient aiServiceClient;
     private final AIJobRepository aiJobRepository;
     private final StringRedisTemplate redisTemplate;
+    private final AIJobStatusMapper aiJobStatusMapper;
 
     @Value("${ai.job.redis-ttl-seconds:3600}")
     private long redisTtlSeconds;
@@ -53,6 +57,25 @@ public class AIJobServiceImpl implements AIJobService {
     }
 
     @Override
+    public AIJobResponse dispatchSuggestTagsJob(TagSuggestionRequest request, Long userId) {
+        String jobId = UUID.randomUUID().toString();
+
+        redisTemplate.opsForValue().set(REDIS_KEY_PREFIX + jobId, PENDING, Duration.ofSeconds(redisTtlSeconds));
+
+        AIJobSuggestTagsRequest dispatchRequest = AIJobSuggestTagsRequest.builder()
+                .jobId(jobId)
+                .userId(userId)
+                .content(request.getContent())
+                .maxTags(request.getMaxTags())
+                .build();
+
+        aiServiceClient.dispatchSuggestTags(dispatchRequest);
+        log.info("Dispatched suggest-tags job {} for user {}", jobId, userId);
+
+        return AIJobResponse.builder().jobId(jobId).status(PENDING).build();
+    }
+
+    @Override
     public AIJobStatusResponse getJobStatus(String jobId) {
         String redisStatus = redisTemplate.opsForValue().get(REDIS_KEY_PREFIX + jobId);
 
@@ -66,11 +89,6 @@ public class AIJobServiceImpl implements AIJobService {
         AIJob job = aiJobRepository.findById(UUID.fromString(jobId))
                 .orElseThrow(() -> new ResourceNotFoundException("AI job", "id", jobId));
 
-        return AIJobStatusResponse.builder()
-                .jobId(jobId)
-                .status(job.getStatus())
-                .result(job.getResult())
-                .error(job.getError())
-                .build();
+        return aiJobStatusMapper.toResponse(job);
     }
 }

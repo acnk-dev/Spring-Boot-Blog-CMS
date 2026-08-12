@@ -1,6 +1,7 @@
 package com.aditya_nk.blogcms.client;
 
 import com.aditya_nk.blogcms.dto.ai.AIJobExcerptRequest;
+import com.aditya_nk.blogcms.dto.ai.AIJobSuggestTagsRequest;
 import com.aditya_nk.blogcms.exception.AIServiceUnavailableException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -31,6 +32,20 @@ public class AIServiceClient {
                     .toBodilessEntity();
         } catch (RestClientException e) {
             log.error("Failed to dispatch excerpt job {} to AI service", request.getJobId(), e);
+            throw new AIServiceUnavailableException(
+                    "AI service is unavailable — could not dispatch job " + request.getJobId(), e);
+        }
+    }
+
+    public void dispatchSuggestTags(AIJobSuggestTagsRequest request) {
+        try {
+            aiServiceRestClient.post()
+                    .uri("/internal/v1/suggest-tags")
+                    .body(request)
+                    .retrieve()
+                    .toBodilessEntity();
+        } catch (RestClientException e) {
+            log.error("Failed to dispatch suggest-tags job {} to AI service", request.getJobId(), e);
             throw new AIServiceUnavailableException(
                     "AI service is unavailable — could not dispatch job " + request.getJobId(), e);
         }

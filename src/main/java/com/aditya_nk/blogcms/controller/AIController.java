@@ -16,7 +16,6 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
 import java.util.Map;
 
 @Slf4j
@@ -87,13 +86,14 @@ public class AIController {
 
     @PostMapping("/suggest-tags")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Map<String, List<String>>> suggestTags(
+    public ResponseEntity<AIJobResponse> suggestTags(
             @Valid @RequestBody TagSuggestionRequest request) {
 
         User user = currentUser();
         aiUsageService.checkAndIncrementUsage(user.getId(), user.getRole());
 
-        return ResponseEntity.ok(Map.of("tags", aiService.suggestTags(request)));
+        AIJobResponse response = aiJobService.dispatchSuggestTagsJob(request, user.getId());
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
     }
 
     @PostMapping("/generate-image")
