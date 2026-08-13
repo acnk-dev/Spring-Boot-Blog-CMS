@@ -3,7 +3,6 @@ package com.aditya_nk.blogcms.controller;
 import com.aditya_nk.blogcms.dto.ai.*;
 import com.aditya_nk.blogcms.entity.User;
 import com.aditya_nk.blogcms.service.AIJobService;
-import com.aditya_nk.blogcms.service.AIService;
 import com.aditya_nk.blogcms.service.AIUsageService;
 import com.aditya_nk.blogcms.service.ImageGenerationService;
 import jakarta.validation.Valid;
@@ -24,7 +23,6 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class AIController {
 
-    private final AIService aiService;
     private final AIUsageService aiUsageService;
     private final ImageGenerationService imageGenerationService;
     private final AIJobService aiJobService;
@@ -53,13 +51,14 @@ public class AIController {
 
     @PostMapping("/post")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<GeneratePostResponse> generatePost(
+    public ResponseEntity<AIJobResponse> generatePost(
             @Valid @RequestBody GeneratePostRequest request) {
 
         User user = currentUser();
         aiUsageService.checkAndIncrementUsage(user.getId(), user.getRole());
 
-        return ResponseEntity.ok(aiService.generatePost(request));
+        AIJobResponse response = aiJobService.dispatchPostJob(request, user.getId());
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
     }
 
     @PostMapping("/expand")

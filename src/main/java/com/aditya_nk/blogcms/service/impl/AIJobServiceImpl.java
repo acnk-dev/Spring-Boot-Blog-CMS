@@ -4,12 +4,14 @@ import com.aditya_nk.blogcms.client.AIServiceClient;
 import com.aditya_nk.blogcms.dto.ai.AIJobExcerptRequest;
 import com.aditya_nk.blogcms.dto.ai.AIJobExpandRequest;
 import com.aditya_nk.blogcms.dto.ai.AIJobOutlineRequest;
+import com.aditya_nk.blogcms.dto.ai.AIJobPostRequest;
 import com.aditya_nk.blogcms.dto.ai.AIJobResponse;
 import com.aditya_nk.blogcms.dto.ai.AIJobStatusResponse;
 import com.aditya_nk.blogcms.dto.ai.AIJobSuggestTagsRequest;
 import com.aditya_nk.blogcms.dto.ai.ExcerptRequest;
 import com.aditya_nk.blogcms.dto.ai.ExpandContentRequest;
 import com.aditya_nk.blogcms.dto.ai.GenerateOutlineRequest;
+import com.aditya_nk.blogcms.dto.ai.GeneratePostRequest;
 import com.aditya_nk.blogcms.dto.ai.TagSuggestionRequest;
 import com.aditya_nk.blogcms.entity.AIJob;
 import com.aditya_nk.blogcms.entity.Category;
@@ -121,6 +123,28 @@ public class AIJobServiceImpl implements AIJobService {
 
         aiServiceClient.dispatchExpand(dispatchRequest);
         log.info("Dispatched expand job {} for user {}", jobId, userId);
+
+        return AIJobResponse.builder().jobId(jobId).status(PENDING).build();
+    }
+
+    @Override
+    public AIJobResponse dispatchPostJob(GeneratePostRequest request, Long userId) {
+        String jobId = UUID.randomUUID().toString();
+        Category category = findCategory(request.getCategoryId());
+
+        redisTemplate.opsForValue().set(REDIS_KEY_PREFIX + jobId, PENDING, Duration.ofSeconds(redisTtlSeconds));
+
+        AIJobPostRequest dispatchRequest = AIJobPostRequest.builder()
+                .jobId(jobId)
+                .userId(userId)
+                .topic(request.getTopic())
+                .categoryName(category.getName())
+                .outline(request.getOutline())
+                .additionalInstructions(request.getAdditionalInstructions())
+                .build();
+
+        aiServiceClient.dispatchPost(dispatchRequest);
+        log.info("Dispatched post job {} for user {}", jobId, userId);
 
         return AIJobResponse.builder().jobId(jobId).status(PENDING).build();
     }

@@ -5,6 +5,7 @@ import com.aditya_nk.blogcms.dto.ai.AIJobStatusResponse;
 import com.aditya_nk.blogcms.dto.ai.ExcerptRequest;
 import com.aditya_nk.blogcms.dto.ai.ExpandContentRequest;
 import com.aditya_nk.blogcms.dto.ai.GenerateOutlineRequest;
+import com.aditya_nk.blogcms.dto.ai.GeneratePostRequest;
 import com.aditya_nk.blogcms.dto.ai.TagSuggestionRequest;
 
 public interface AIJobService {
@@ -34,6 +35,13 @@ public interface AIJobService {
      * Same category-resolution step as dispatchOutlineJob.
      */
     AIJobResponse dispatchExpandJob(ExpandContentRequest request, Long userId);
+
+    /**
+     * Same category-resolution step as dispatchOutlineJob. outline is
+     * passed through unchanged (the human-reviewed section list from an
+     * earlier /outline call).
+     */
+    AIJobResponse dispatchPostJob(GeneratePostRequest request, Long userId);
 
     /**
      * Reads job status: Redis first (fast path while PENDING), falling

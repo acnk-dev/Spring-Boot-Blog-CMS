@@ -3,6 +3,7 @@ package com.aditya_nk.blogcms.client;
 import com.aditya_nk.blogcms.dto.ai.AIJobExcerptRequest;
 import com.aditya_nk.blogcms.dto.ai.AIJobExpandRequest;
 import com.aditya_nk.blogcms.dto.ai.AIJobOutlineRequest;
+import com.aditya_nk.blogcms.dto.ai.AIJobPostRequest;
 import com.aditya_nk.blogcms.dto.ai.AIJobSuggestTagsRequest;
 import com.aditya_nk.blogcms.exception.AIServiceUnavailableException;
 import lombok.RequiredArgsConstructor;
@@ -76,6 +77,20 @@ public class AIServiceClient {
                     .toBodilessEntity();
         } catch (RestClientException e) {
             log.error("Failed to dispatch expand job {} to AI service", request.getJobId(), e);
+            throw new AIServiceUnavailableException(
+                    "AI service is unavailable — could not dispatch job " + request.getJobId(), e);
+        }
+    }
+
+    public void dispatchPost(AIJobPostRequest request) {
+        try {
+            aiServiceRestClient.post()
+                    .uri("/internal/v1/post")
+                    .body(request)
+                    .retrieve()
+                    .toBodilessEntity();
+        } catch (RestClientException e) {
+            log.error("Failed to dispatch post job {} to AI service", request.getJobId(), e);
             throw new AIServiceUnavailableException(
                     "AI service is unavailable — could not dispatch job " + request.getJobId(), e);
         }
