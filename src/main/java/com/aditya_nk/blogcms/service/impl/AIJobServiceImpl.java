@@ -2,15 +2,21 @@ package com.aditya_nk.blogcms.service.impl;
 
 import com.aditya_nk.blogcms.client.AIServiceClient;
 import com.aditya_nk.blogcms.dto.ai.AIJobExcerptRequest;
+import com.aditya_nk.blogcms.dto.ai.AIJobExpandRequest;
+import com.aditya_nk.blogcms.dto.ai.AIJobOutlineRequest;
 import com.aditya_nk.blogcms.dto.ai.AIJobResponse;
 import com.aditya_nk.blogcms.dto.ai.AIJobStatusResponse;
 import com.aditya_nk.blogcms.dto.ai.AIJobSuggestTagsRequest;
 import com.aditya_nk.blogcms.dto.ai.ExcerptRequest;
+import com.aditya_nk.blogcms.dto.ai.ExpandContentRequest;
+import com.aditya_nk.blogcms.dto.ai.GenerateOutlineRequest;
 import com.aditya_nk.blogcms.dto.ai.TagSuggestionRequest;
 import com.aditya_nk.blogcms.entity.AIJob;
+import com.aditya_nk.blogcms.entity.Category;
 import com.aditya_nk.blogcms.exception.ResourceNotFoundException;
 import com.aditya_nk.blogcms.mapper.AIJobStatusMapper;
 import com.aditya_nk.blogcms.repository.AIJobRepository;
+import com.aditya_nk.blogcms.repository.CategoryRepository;
 import com.aditya_nk.blogcms.service.AIJobService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -31,6 +37,7 @@ public class AIJobServiceImpl implements AIJobService {
 
     private final AIServiceClient aiServiceClient;
     private final AIJobRepository aiJobRepository;
+    private final CategoryRepository categoryRepository;
     private final StringRedisTemplate redisTemplate;
     private final AIJobStatusMapper aiJobStatusMapper;
 
@@ -73,6 +80,54 @@ public class AIJobServiceImpl implements AIJobService {
         log.info("Dispatched suggest-tags job {} for user {}", jobId, userId);
 
         return AIJobResponse.builder().jobId(jobId).status(PENDING).build();
+    }
+
+    @Override
+    public AIJobResponse dispatchOutlineJob(GenerateOutlineRequest request, Long userId) {
+        String jobId = UUID.randomUUID().toString();
+        Category category = findCategory(request.getCategoryId());
+
+        redisTemplate.opsForValue().set(REDIS_KEY_PREFIX + jobId, PENDING, Duration.ofSeconds(redisTtlSeconds));
+
+        AIJobOutlineRequest dispatchRequest = AIJobOutlineRequest.builder()
+                .jobId(jobId)
+                .userId(userId)
+                .topic(request.getTopic())
+                .categoryName(category.getName())
+                .targetAudience(request.getTargetAudience())
+                .additionalInstructions(request.getAdditionalInstructions())
+                .build();
+
+        aiServiceClient.dispatchOutline(dispatchRequest);
+        log.info("Dispatched outline job {} for user {}", jobId, userId);
+
+        return AIJobResponse.builder().jobId(jobId).status(PENDING).build();
+    }
+
+    @Override
+    public AIJobResponse dispatchExpandJob(ExpandContentRequest request, Long userId) {
+        String jobId = UUID.randomUUID().toString();
+        Category category = findCategory(request.getCategoryId());
+
+        redisTemplate.opsForValue().set(REDIS_KEY_PREFIX + jobId, PENDING, Duration.ofSeconds(redisTtlSeconds));
+
+        AIJobExpandRequest dispatchRequest = AIJobExpandRequest.builder()
+                .jobId(jobId)
+                .userId(userId)
+                .content(request.getContent())
+                .categoryName(category.getName())
+                .focusAreas(request.getFocusAreas())
+                .build();
+
+        aiServiceClient.dispatchExpand(dispatchRequest);
+        log.info("Dispatched expand job {} for user {}", jobId, userId);
+
+        return AIJobResponse.builder().jobId(jobId).status(PENDING).build();
+    }
+
+    private Category findCategory(Long categoryId) {
+        return categoryRepository.findById(categoryId)
+                .orElseThrow(() -> new ResourceNotFoundException("Category", "id", categoryId));
     }
 
     @Override

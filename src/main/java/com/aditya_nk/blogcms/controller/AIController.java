@@ -41,13 +41,14 @@ public class AIController {
 
     @PostMapping("/outline")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<GenerateOutlineResponse> generateOutline(
+    public ResponseEntity<AIJobResponse> generateOutline(
             @Valid @RequestBody GenerateOutlineRequest request) {
 
         User user = currentUser();
         aiUsageService.checkAndIncrementUsage(user.getId(), user.getRole());
 
-        return ResponseEntity.ok(aiService.generateOutline(request));
+        AIJobResponse response = aiJobService.dispatchOutlineJob(request, user.getId());
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
     }
 
     @PostMapping("/post")
@@ -63,13 +64,14 @@ public class AIController {
 
     @PostMapping("/expand")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<ExpandContentResponse> expandContent(
+    public ResponseEntity<AIJobResponse> expandContent(
             @Valid @RequestBody ExpandContentRequest request) {
 
         User user = currentUser();
         aiUsageService.checkAndIncrementUsage(user.getId(), user.getRole());
 
-        return ResponseEntity.ok(aiService.expandContent(request));
+        AIJobResponse response = aiJobService.dispatchExpandJob(request, user.getId());
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
     }
 
     @PostMapping("/excerpt")

@@ -3,6 +3,8 @@ package com.aditya_nk.blogcms.service;
 import com.aditya_nk.blogcms.dto.ai.AIJobResponse;
 import com.aditya_nk.blogcms.dto.ai.AIJobStatusResponse;
 import com.aditya_nk.blogcms.dto.ai.ExcerptRequest;
+import com.aditya_nk.blogcms.dto.ai.ExpandContentRequest;
+import com.aditya_nk.blogcms.dto.ai.GenerateOutlineRequest;
 import com.aditya_nk.blogcms.dto.ai.TagSuggestionRequest;
 
 public interface AIJobService {
@@ -18,6 +20,20 @@ public interface AIJobService {
      * category-agnostic, so no category-resolution step is needed here.
      */
     AIJobResponse dispatchSuggestTagsJob(TagSuggestionRequest request, Long userId);
+
+    /**
+     * Resolves request.categoryId -> Category.getName() before dispatching —
+     * the AI service never sees a categoryId, only the resolved name. First
+     * of the dispatch methods that needs this (excerpt/suggest-tags are
+     * category-agnostic). Throws ResourceNotFoundException if the category
+     * doesn't exist.
+     */
+    AIJobResponse dispatchOutlineJob(GenerateOutlineRequest request, Long userId);
+
+    /**
+     * Same category-resolution step as dispatchOutlineJob.
+     */
+    AIJobResponse dispatchExpandJob(ExpandContentRequest request, Long userId);
 
     /**
      * Reads job status: Redis first (fast path while PENDING), falling
