@@ -4,7 +4,6 @@ import com.aditya_nk.blogcms.dto.ai.*;
 import com.aditya_nk.blogcms.entity.User;
 import com.aditya_nk.blogcms.service.AIJobService;
 import com.aditya_nk.blogcms.service.AIUsageService;
-import com.aditya_nk.blogcms.service.ImageGenerationService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -24,7 +23,6 @@ import java.util.Map;
 public class AIController {
 
     private final AIUsageService aiUsageService;
-    private final ImageGenerationService imageGenerationService;
     private final AIJobService aiJobService;
 
     @GetMapping("/test")
@@ -99,7 +97,7 @@ public class AIController {
 
     @PostMapping("/generate-image")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<GenerateImageResponse> generateImage(
+    public ResponseEntity<AIJobResponse> generateImage(
             @Valid @RequestBody GenerateImageRequest request) {
 
         User user = currentUser();
@@ -107,7 +105,8 @@ public class AIController {
         aiUsageService.checkAndIncrementUsage(user.getId(), user.getRole());
         aiUsageService.checkAndIncrementUsage(user.getId(), user.getRole());
 
-        return ResponseEntity.ok(imageGenerationService.generateFeaturedImage(request));
+        AIJobResponse response = aiJobService.dispatchImageJob(request, user.getId());
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
     }
 
     @GetMapping("/usage")

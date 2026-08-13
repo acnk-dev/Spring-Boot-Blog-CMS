@@ -3,6 +3,7 @@ package com.aditya_nk.blogcms.service.impl;
 import com.aditya_nk.blogcms.client.AIServiceClient;
 import com.aditya_nk.blogcms.dto.ai.AIJobExcerptRequest;
 import com.aditya_nk.blogcms.dto.ai.AIJobExpandRequest;
+import com.aditya_nk.blogcms.dto.ai.AIJobImageRequest;
 import com.aditya_nk.blogcms.dto.ai.AIJobOutlineRequest;
 import com.aditya_nk.blogcms.dto.ai.AIJobPostRequest;
 import com.aditya_nk.blogcms.dto.ai.AIJobResponse;
@@ -10,6 +11,7 @@ import com.aditya_nk.blogcms.dto.ai.AIJobStatusResponse;
 import com.aditya_nk.blogcms.dto.ai.AIJobSuggestTagsRequest;
 import com.aditya_nk.blogcms.dto.ai.ExcerptRequest;
 import com.aditya_nk.blogcms.dto.ai.ExpandContentRequest;
+import com.aditya_nk.blogcms.dto.ai.GenerateImageRequest;
 import com.aditya_nk.blogcms.dto.ai.GenerateOutlineRequest;
 import com.aditya_nk.blogcms.dto.ai.GeneratePostRequest;
 import com.aditya_nk.blogcms.dto.ai.TagSuggestionRequest;
@@ -145,6 +147,28 @@ public class AIJobServiceImpl implements AIJobService {
 
         aiServiceClient.dispatchPost(dispatchRequest);
         log.info("Dispatched post job {} for user {}", jobId, userId);
+
+        return AIJobResponse.builder().jobId(jobId).status(PENDING).build();
+    }
+
+    @Override
+    public AIJobResponse dispatchImageJob(GenerateImageRequest request, Long userId) {
+        String jobId = UUID.randomUUID().toString();
+        Category category = findCategory(request.getCategoryId());
+
+        redisTemplate.opsForValue().set(REDIS_KEY_PREFIX + jobId, PENDING, Duration.ofSeconds(redisTtlSeconds));
+
+        AIJobImageRequest dispatchRequest = AIJobImageRequest.builder()
+                .jobId(jobId)
+                .userId(userId)
+                .title(request.getTitle())
+                .categoryName(category.getName())
+                .style(request.getStyle())
+                .additionalContext(request.getAdditionalContext())
+                .build();
+
+        aiServiceClient.dispatchImage(dispatchRequest);
+        log.info("Dispatched image job {} for user {}", jobId, userId);
 
         return AIJobResponse.builder().jobId(jobId).status(PENDING).build();
     }

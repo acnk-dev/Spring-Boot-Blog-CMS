@@ -4,6 +4,7 @@ import com.aditya_nk.blogcms.dto.ai.AIJobResponse;
 import com.aditya_nk.blogcms.dto.ai.AIJobStatusResponse;
 import com.aditya_nk.blogcms.dto.ai.ExcerptRequest;
 import com.aditya_nk.blogcms.dto.ai.ExpandContentRequest;
+import com.aditya_nk.blogcms.dto.ai.GenerateImageRequest;
 import com.aditya_nk.blogcms.dto.ai.GenerateOutlineRequest;
 import com.aditya_nk.blogcms.dto.ai.GeneratePostRequest;
 import com.aditya_nk.blogcms.dto.ai.TagSuggestionRequest;
@@ -42,6 +43,13 @@ public interface AIJobService {
      * earlier /outline call).
      */
     AIJobResponse dispatchPostJob(GeneratePostRequest request, Long userId);
+
+    /**
+     * Same category-resolution step as dispatchOutlineJob. The 2-usage-credit
+     * charge for image generation is applied in AIController before this is
+     * called, unchanged from before this migration.
+     */
+    AIJobResponse dispatchImageJob(GenerateImageRequest request, Long userId);
 
     /**
      * Reads job status: Redis first (fast path while PENDING), falling
