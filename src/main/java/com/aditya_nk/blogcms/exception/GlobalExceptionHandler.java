@@ -180,6 +180,26 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Handle AI service dispatch failures (down, timeout, non-2xx) — 503 Service Unavailable.
+     */
+    @ExceptionHandler(AIServiceUnavailableException.class)
+    public ResponseEntity<ErrorResponse> handleAIServiceUnavailableException(
+            AIServiceUnavailableException ex,
+            HttpServletRequest request
+    ) {
+        ErrorResponse errorResponse = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.SERVICE_UNAVAILABLE.value())
+                .error("AI Service Unavailable")
+                .message(ex.getMessage())
+                .path(request.getRequestURI())
+                .build();
+
+        log.error("AI service dispatch failed: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(errorResponse);
+    }
+
+    /**
      * Handle all other exceptions.
      */
     @ExceptionHandler(Exception.class)
