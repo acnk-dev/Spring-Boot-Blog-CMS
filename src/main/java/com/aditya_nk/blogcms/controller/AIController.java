@@ -2,19 +2,18 @@ package com.aditya_nk.blogcms.controller;
 
 import com.aditya_nk.blogcms.dto.ai.*;
 import com.aditya_nk.blogcms.entity.User;
-import com.aditya_nk.blogcms.service.AIService;
+import com.aditya_nk.blogcms.service.AIJobService;
 import com.aditya_nk.blogcms.service.AIUsageService;
-import com.aditya_nk.blogcms.service.ImageGenerationService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
 import java.util.Map;
 
 @Slf4j
@@ -23,9 +22,8 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class AIController {
 
-    private final AIService aiService;
     private final AIUsageService aiUsageService;
-    private final ImageGenerationService imageGenerationService;
+    private final AIJobService aiJobService;
 
     @GetMapping("/test")
     @PreAuthorize("hasRole('ADMIN')")
@@ -39,62 +37,67 @@ public class AIController {
 
     @PostMapping("/outline")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<GenerateOutlineResponse> generateOutline(
+    public ResponseEntity<AIJobResponse> generateOutline(
             @Valid @RequestBody GenerateOutlineRequest request) {
 
         User user = currentUser();
         aiUsageService.checkAndIncrementUsage(user.getId(), user.getRole());
 
-        return ResponseEntity.ok(aiService.generateOutline(request));
+        AIJobResponse response = aiJobService.dispatchOutlineJob(request, user.getId());
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
     }
 
     @PostMapping("/post")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<GeneratePostResponse> generatePost(
+    public ResponseEntity<AIJobResponse> generatePost(
             @Valid @RequestBody GeneratePostRequest request) {
 
         User user = currentUser();
         aiUsageService.checkAndIncrementUsage(user.getId(), user.getRole());
 
-        return ResponseEntity.ok(aiService.generatePost(request));
+        AIJobResponse response = aiJobService.dispatchPostJob(request, user.getId());
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
     }
 
     @PostMapping("/expand")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<ExpandContentResponse> expandContent(
+    public ResponseEntity<AIJobResponse> expandContent(
             @Valid @RequestBody ExpandContentRequest request) {
 
         User user = currentUser();
         aiUsageService.checkAndIncrementUsage(user.getId(), user.getRole());
 
-        return ResponseEntity.ok(aiService.expandContent(request));
+        AIJobResponse response = aiJobService.dispatchExpandJob(request, user.getId());
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
     }
 
     @PostMapping("/excerpt")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Map<String, String>> generateExcerpt(
+    public ResponseEntity<AIJobResponse> generateExcerpt(
             @Valid @RequestBody ExcerptRequest request) {
 
         User user = currentUser();
         aiUsageService.checkAndIncrementUsage(user.getId(), user.getRole());
 
-        return ResponseEntity.ok(Map.of("excerpt", aiService.generateExcerpt(request)));
+        AIJobResponse response = aiJobService.dispatchExcerptJob(request, user.getId());
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
     }
 
     @PostMapping("/suggest-tags")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Map<String, List<String>>> suggestTags(
+    public ResponseEntity<AIJobResponse> suggestTags(
             @Valid @RequestBody TagSuggestionRequest request) {
 
         User user = currentUser();
         aiUsageService.checkAndIncrementUsage(user.getId(), user.getRole());
 
-        return ResponseEntity.ok(Map.of("tags", aiService.suggestTags(request)));
+        AIJobResponse response = aiJobService.dispatchSuggestTagsJob(request, user.getId());
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
     }
 
     @PostMapping("/generate-image")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<GenerateImageResponse> generateImage(
+    public ResponseEntity<AIJobResponse> generateImage(
             @Valid @RequestBody GenerateImageRequest request) {
 
         User user = currentUser();
@@ -102,7 +105,8 @@ public class AIController {
         aiUsageService.checkAndIncrementUsage(user.getId(), user.getRole());
         aiUsageService.checkAndIncrementUsage(user.getId(), user.getRole());
 
-        return ResponseEntity.ok(imageGenerationService.generateFeaturedImage(request));
+        AIJobResponse response = aiJobService.dispatchImageJob(request, user.getId());
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
     }
 
     @GetMapping("/usage")
